@@ -7,7 +7,6 @@ interface DuplicateWarningModalProps {
     fileName: string;
     currentIndex?: number;
     totalDuplicates?: number;
-    onViewExisting: () => void;
     onUploadAnyway: () => void;
     onSkip: () => void;
 }

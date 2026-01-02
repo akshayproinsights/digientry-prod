@@ -2,19 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { Upload as UploadIcon, X, FileImage, Loader2, CheckCircle, XCircle } from 'lucide-react';
 import { uploadAPI } from '../services/api';
 import { useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
 import DuplicateWarningModal from '../components/DuplicateWarningModal';
-
-interface ProcessingStatus {
-    task_id: string;
-    status: string;
-    progress: {
-        total: number;
-        processed: number;
-        failed: number;
-    };
-    message: string;
-}
 
 const UploadPage: React.FC = () => {
     const [files, setFiles] = useState<File[]>([]);
@@ -37,10 +25,8 @@ const UploadPage: React.FC = () => {
     const [duplicateInfo, setDuplicateInfo] = useState<any>(null);
     const [filesToSkip, setFilesToSkip] = useState<string[]>([]);
     const [filesToForceUpload, setFilesToForceUpload] = useState<string[]>([]);
-    const [processingAfterDuplicates, setProcessingAfterDuplicates] = useState(false);
     const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
     const queryClient = useQueryClient();
-    const navigate = useNavigate();
 
     // Helper function to format time remaining
     const formatTimeRemaining = (seconds: number): string => {
@@ -241,10 +227,7 @@ const UploadPage: React.FC = () => {
         moveToNextDuplicate(filesToSkip, updatedForceUpload);
     };
 
-    const handleViewExisting = () => {
-        // Keep modal open for now (no-op)
-        // User can click Skip or Upload Anyway after viewing
-    };
+
 
     const moveToNextDuplicate = (skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload) => {
         const nextIndex = currentDuplicateIndex + 1;
@@ -267,7 +250,6 @@ const UploadPage: React.FC = () => {
 
     const processRemainingFiles = async (skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload) => {
         try {
-            setProcessingAfterDuplicates(true);
             setIsProcessing(true);
 
             // CRITICAL FIX: Identify which files were part of the duplicate detection batch
@@ -324,7 +306,6 @@ const UploadPage: React.FC = () => {
         } catch (error) {
             console.error('Error processing remaining files:', error);
             setIsProcessing(false);
-            setProcessingAfterDuplicates(false);
         }
     };
 
@@ -349,7 +330,6 @@ const UploadPage: React.FC = () => {
         });
 
         setIsProcessing(false);
-        setProcessingAfterDuplicates(false);
         setFiles([]);
         setUploadedFiles([]);
         setDuplicateQueue([]);
@@ -584,7 +564,6 @@ const UploadPage: React.FC = () => {
                 fileName={duplicateInfo?.file_key || duplicateInfo?.filename || ''}
                 currentIndex={currentDuplicateIndex}
                 totalDuplicates={duplicateQueue.length}
-                onViewExisting={handleViewExisting}
                 onUploadAnyway={handleUploadAnyway}
                 onSkip={handleSkipDuplicate}
             />
