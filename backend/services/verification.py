@@ -294,6 +294,12 @@ def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.Da
     
     # Deduplicate
     dedup_cols = []
+    
+    # CRITICAL: Include Row_Id first to ensure each unique line item is preserved
+    # Without Row_Id, line items with same Receipt Number + Date + Description would be deduplicated
+    if rowid_col_raw and rowid_col_raw in final_df.columns:
+        dedup_cols.append(rowid_col_raw)
+    
     if "Receipt Number" in final_df.columns:
         dedup_cols.append("Receipt Number")
     if "Date" in final_df.columns:
