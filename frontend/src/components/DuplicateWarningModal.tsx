@@ -135,12 +135,6 @@ const DuplicateWarningModal: React.FC<DuplicateWarningModalProps> = ({
                     {/* Action Buttons */}
                     <div className="flex gap-3 pt-2">
                         <button
-                            onClick={handleClose}
-                            className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-3 px-4 rounded-lg transition shadow-md hover:shadow-lg"
-                        >
-                            Skip This File
-                        </button>
-                        <button
                             onClick={() => {
                                 setIsClosing(true);
                                 setTimeout(() => {
@@ -151,6 +145,12 @@ const DuplicateWarningModal: React.FC<DuplicateWarningModalProps> = ({
                             className="flex-1 bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white font-semibold py-3 px-4 rounded-lg transition shadow-md hover:shadow-lg"
                         >
                             Replace Old Record
+                        </button>
+                        <button
+                            onClick={handleClose}
+                            className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-3 px-4 rounded-lg transition shadow-md hover:shadow-lg"
+                        >
+                            Skip This File
                         </button>
                     </div>
                 </div>

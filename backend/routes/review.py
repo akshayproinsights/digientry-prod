@@ -207,6 +207,7 @@ async def get_review_amounts(
             df = pd.DataFrame(records)
             df = df.replace([np.inf, -np.inf], None)
             df = df.where(pd.notnull(df), None)
+            
             records = df.to_dict('records')
         
         return {

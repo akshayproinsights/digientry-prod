@@ -1,12 +1,245 @@
 {
-  "username": "Adnak",
-  "display_name": "Adnak Garage",
-  "industry": "automobile",
-  "r2_bucket": "adnak-invoices",
-  "dashboard_url": "https://lookerstudio.google.com/reporting/2c91f3c2-92cb-44c0-9bf5-b4697caadaf0",
-  "extends_template": "automobile",
-  "column_label_overrides": {
-    "car_number": "Vehicle Registration",
-    "customer_name": "Customer Name"
-  }
+    "industry": "automobile",
+    "display_name": "Automobile Shop",
+    "gemini": {
+        "system_instruction": "### ROLE & OBJECTIVE\\nYou are an expert OCR data extractor for handwritten automobile garage bills. Your goal is to digitize bill content into a strict JSON format with 100% precision.\\n\\n**CRITICAL INSTRUCTION: Take your time to process the image. Verify every extracted field, especially Date and Receipt Number.**\\n\\n### GLOBAL PARSING RULES\\n1. **Quantities:** Interpret decorative marks (e.g., \\\"- 01 -\\\", \\\"-03/-\\\") as integers (1, 3). **Default to 1** if the quantity is blank. Allow decimals.\\n2. **Currency/Rates:** Extract numerical values only. Remove trailing symbols (e.g., \\\"1260/-\\\" becomes 1260).\\n3. **Handwriting:** Prioritize accuracy. If a line is illegible, lower the confidence score.\\n\\n### EXTRACTION GUIDELINES\\n\\n#### 1. HEADER (Receipt Details)\\n* **Receipt Number (CRITICAL): ENABLED**\\n    * Look for a **number** (can be 1, 2, 3, 4, 5 or more digits - e.g., 1, 25, 125, 1050, 12345).\\n    * **NOTE:** It may NOT have prefixes like \\\"No.\\\" or \\\"Sr.\\\". It might just be a standalone floating number like \\\"125\\\" or \\\"1\\\" or \\\"1050\\\".\\n    * **Location:** Often in the top corners (left or right) or near the Date.\\n    * **Format:** **Return as-is** - do NOT pad with zeros. Keep the original format (e.g., \\\"1\\\" stays \\\"1\\\", \\\"125\\\" stays \\\"125\\\", \\\"1050\\\" stays \\\"1050\\\").\\n    * **Confidence:** Provide 0-100 score based on legibility.\\n* **Date (CRITICAL): ENABLED**\\n    * **Input Logic:** Treat as DD-MM-YY or DD-MM-YYYY (Day comes FIRST).\\n    * **Constraints:** Year **must** be 2025 or 2026. Ignore dates prior to 2025.\\n    * **Output Format:** Convert strictly to **'dd-MMM-yyyy'** (e.g., 10-Dec-2025).\\n    * **Verify:** Double-check handwriting. If unclear, look for context.\\n    * **Confidence:** Provide 0-100 score based on legibility.\\n* **Customer Name:** English only. **Remove salutations** (Shri, Mr., Sir). Name only.\\n* **Car Number:** Standard format, no decimals.\\n* **Odometer:** Kilometer reading (integer).\\n* **Total Bill:** Grand total.\\n\\n#### 2. LINE ITEMS (Table Data)\\n* Extract **every** handwritten row.\\n* **Type:** Infer \\\"Part\\\" or \\\"Labour\\\".\\n* **Calculations:** Ensure 'Amount' ≈ 'Quantity' * 'Rate'.\\n\\n### BOUNDING BOX EXTRACTION\\nFor EVERY field you extract, include its bounding box coordinates in normalized format (0-1 range).\\nFormat: {\\\"x\\\": 0.5, \\\"y\\\": 0.1, \\\"width\\\": 0.2, \\\"height\\\": 0.05}\\nWhere:\\n- x, y: top-left corner (0-1 range, relative to image dimensions)\\n- width, height: box dimensions (0-1 range)\\n\\nInclude bbox for:\\n- Header fields: receipt_number_bbox, date_bbox\\n- **IMPORTANT**: For each line item, provide **line_item_row_bbox** that captures the ENTIRE table row (from the start of description to the end of amount)\\n- **OPTIONAL**: If receipt number and date are close together (e.g., in the header), provide **date_and_receipt_combined_bbox** that encompasses BOTH fields.\\n\\n### OUTPUT FORMAT (JSON ONLY)\\nReturn raw JSON with no markdown formatting.\\n\\n{\\n    \\\"header\\\": {\\n        \\\"overall_confidence\\\": Number (0-100),\\n        \\\"receipt_number\\\": \\\"String (1-5+ digits)\\\",\\n        \\\"receipt_number_confidence\\\": Number (0-100),\\n        \\\"receipt_number_bbox\\\": {\\\"x\\\": Number, \\\"y\\\": Number, \\\"width\\\": Number, \\\"height\\\": Number},\\n        \\\"date\\\": \\\"String (dd-MMM-yyyy)\\\",\\n        \\\"date_confidence\\\": Number (0-100),\\n        \\\"date_bbox\\\": {\\\"x\\\": Number, \\\"y\\\": Number, \\\"width\\\": Number, \\\"height\\\": Number},\\n        \\\"date_and_receipt_combined_bbox\\\": {\\\"x\\\": Number, \\\"y\\\": Number, \\\"width\\\": Number, \\\"height\\\": Number},\\n        \\\"customer_name\\\": \\\"String\\\",\\n        \\\"mobile_number\\\": \\\"String\\\",\\n        \\\"car_number\\\": \\\"String\\\",\\n        \\\"odometer\\\": \\\"String\\\",\\n        \\\"total_bill_amount\\\": \\\"Number\\\"\\n    },\\n    \\\"items\\\": [\\n        {\\n            \\\"description\\\": \\\"String\\\",\\n            \\\"type\\\": \\\"Part|Labour\\\",\\n            \\\"quantity\\\": Number,\\n            \\\"rate\\\": Number,\\n            \\\"amount\\\": Number,\\n            \\\"line_item_row_bbox\\\": {\\\"x\\\": Number, \\\"y\\\": Number, \\\"width\\\": Number, \\\"height\\\": Number},\\n            \\\"confidence\\\": Number (0-100)\\n        }\\n    ]\\n}"
+    },
+    "columns": {
+        "invoice_all": [
+            {
+                "db_column": "receipt_number",
+                "label": "Receipt #",
+                "type": "string",
+                "visible": true,
+                "editable": false
+            },
+            {
+                "db_column": "date",
+                "label": "Date",
+                "type": "date",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "customer_name",
+                "label": "Customer",
+                "type": "string",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "mobile_number",
+                "label": "Mobile",
+                "type": "string",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "car_number",
+                "label": "Vehicle #",
+                "type": "string",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "odometer",
+                "label": "KM",
+                "type": "number",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "description",
+                "label": "Item",
+                "type": "string",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "type",
+                "label": "Type",
+                "type": "select",
+                "options": [
+                    "Part",
+                    "Labour"
+                ],
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "quantity",
+                "label": "Qty",
+                "type": "number",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "rate",
+                "label": "Rate",
+                "type": "number",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "amount",
+                "label": "Amount",
+                "type": "number",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "receipt_link",
+                "label": "Link",
+                "type": "link",
+                "visible": true,
+                "editable": false
+            }
+        ],
+        "verify_dates": [
+            {
+                "db_column": "verification_status",
+                "label": "Status",
+                "type": "select",
+                "options": [
+                    "Pending",
+                    "Done"
+                ],
+                "editable": true
+            },
+            {
+                "db_column": "receipt_number",
+                "label": "Receipt #",
+                "type": "string",
+                "editable": false
+            },
+            {
+                "db_column": "date",
+                "label": "Date",
+                "type": "date",
+                "editable": true
+            },
+            {
+                "db_column": "audit_findings",
+                "label": "Issues",
+                "type": "string",
+                "editable": false
+            },
+            {
+                "db_column": "receipt_link",
+                "label": "View",
+                "type": "link",
+                "editable": false
+            }
+        ],
+        "verify_amounts": [
+            {
+                "db_column": "verification_status",
+                "label": "Status",
+                "type": "select",
+                "options": [
+                    "Pending",
+                    "Done"
+                ],
+                "editable": true
+            },
+            {
+                "db_column": "receipt_number",
+                "label": "Receipt #",
+                "type": "string",
+                "editable": false
+            },
+            {
+                "db_column": "description",
+                "label": "Description",
+                "type": "string",
+                "editable": true
+            },
+            {
+                "db_column": "quantity",
+                "label": "Qty",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "rate",
+                "label": "Rate",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "amount",
+                "label": "Amount",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "amount_mismatch",
+                "label": "Mismatch",
+                "type": "number",
+                "editable": false
+            },
+            {
+                "db_column": "receipt_link",
+                "label": "Receipt",
+                "type": "link",
+                "editable": false
+            }
+        ],
+        "verified": [
+            {
+                "db_column": "receipt_number",
+                "label": "Receipt #",
+                "type": "string",
+                "editable": false
+            },
+            {
+                "db_column": "date",
+                "label": "Date",
+                "type": "date",
+                "editable": true
+            },
+            {
+                "db_column": "customer_name",
+                "label": "Customer",
+                "type": "string",
+                "editable": true
+            },
+            {
+                "db_column": "car_number",
+                "label": "Vehicle #",
+                "type": "string",
+                "editable": true
+            },
+            {
+                "db_column": "description",
+                "label": "Item",
+                "type": "string",
+                "editable": true
+            },
+            {
+                "db_column": "quantity",
+                "label": "Qty",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "rate",
+                "label": "Rate",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "amount",
+                "label": "Amount",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "receipt_link",
+                "label": "Link",
+                "type": "link",
+                "editable": false
+            }
+        ]
+    }
 }

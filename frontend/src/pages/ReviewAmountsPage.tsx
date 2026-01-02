@@ -2,19 +2,13 @@ import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { reviewAPI } from '../services/api';
 import { RefreshCw, Loader2, Trash2 } from 'lucide-react';
-
-// Status priority for sorting
-const STATUS_PRIORITY: { [key: string]: number } = {
-    'Pending': 1,
-    'Duplicate Receipt Number': 2,
-    'Already Verified': 3,
-    'Done': 4,
-    'Rejected': 5
-};
+import CroppedFieldPreview from '../components/CroppedFieldPreview';
+import StatusToggle from '../components/StatusToggle';
 
 const ReviewAmountsPage: React.FC = () => {
     const [records, setRecords] = useState<any[]>([]);
     const [hasChanges, setHasChanges] = useState(false);
+    const [showCompleted, setShowCompleted] = useState(false);  // Toggle to show/hide completed records
     const queryClient = useQueryClient();
 
     // Debounce timer for auto-save (wait 500ms after user stops typing)
@@ -29,24 +23,24 @@ const ReviewAmountsPage: React.FC = () => {
         },
     });
 
-    // Sort records by status priority, then by Receipt Number within Pending
-    const sortedRecords = useMemo(() => {
-        return [...records].sort((a, b) => {
-            const statusA = a['Verification Status'] || 'Pending';
-            const statusB = b['Verification Status'] || 'Pending';
-            const priorityA = STATUS_PRIORITY[statusA] ?? 99;
-            const priorityB = STATUS_PRIORITY[statusB] ?? 99;
-
-            if (priorityA !== priorityB) {
-                return priorityA - priorityB;
+    // Filter records based on showCompleted toggle
+    const filteredRecords = useMemo(() => {
+        // Show Pending and Duplicate Receipt Number by default
+        // If showCompleted is true, also show Done records
+        return records.filter(r => {
+            const status = r['Verification Status'] || 'Pending';
+            if (status === 'Pending' || status === 'Duplicate Receipt Number') {
+                return true;
             }
-
-            // Within same status (especially Pending), sort by Receipt Number
-            const recNumA = String(a['Receipt Number'] || '').padStart(3, '0');
-            const recNumB = String(b['Receipt Number'] || '').padStart(3, '0');
-            return recNumA.localeCompare(recNumB);
+            if (status === 'Done' && showCompleted) {
+                return true;
+            }
+            return false;
         });
-    }, [records]);
+    }, [records, showCompleted]);
+
+    // Use filtered records directly without sorting
+    const sortedRecords = filteredRecords;
 
     // Individual row update mutation
     const updateRowMutation = useMutation({
@@ -148,6 +142,15 @@ const ReviewAmountsPage: React.FC = () => {
                 </div>
                 <div className="flex space-x-3">
                     <button
+                        onClick={() => setShowCompleted(!showCompleted)}
+                        className={`flex items-center px-4 py-2 rounded-lg transition ${showCompleted
+                            ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                            : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                            }`}
+                    >
+                        {showCompleted ? '✓ Showing Completed' : 'Show Completed'}
+                    </button>
+                    <button
                         onClick={handleSyncFinish}
                         disabled={syncMutation.isPending}
                         className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
@@ -179,6 +182,7 @@ const ReviewAmountsPage: React.FC = () => {
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Image Preview</th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Receipt #</th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Quantity</th>
@@ -193,14 +197,26 @@ const ReviewAmountsPage: React.FC = () => {
                                 {sortedRecords.map((record, index) => (
                                     <tr key={index} className="hover:bg-gray-50">
                                         <td className="px-6 py-4">
-                                            <select
-                                                value={record['Verification Status'] || 'Pending'}
-                                                onChange={(e) => handleFieldChange(index, 'Verification Status', e.target.value)}
-                                                className="border border-gray-300 rounded px-2 py-1 text-sm"
-                                            >
-                                                <option>Pending</option>
-                                                <option>Done</option>
-                                            </select>
+                                            <StatusToggle
+                                                status={record['Verification Status'] || 'Pending'}
+                                                onChange={(newStatus: string) => handleFieldChange(index, 'Verification Status', newStatus)}
+                                            />
+                                        </td>
+                                        <td className="px-4 py-4">
+                                            {record['Receipt Link'] ? (
+                                                <CroppedFieldPreview
+                                                    imageUrl={record['Receipt Link']}
+                                                    bboxes={{
+                                                        line_item_row: record['line_item_row_bbox']
+                                                    }}
+                                                    fields={['line_item_row']}
+                                                    fieldLabels={{
+                                                        line_item_row: 'Line Item'
+                                                    }}
+                                                />
+                                            ) : (
+                                                <span className="text-gray-400 text-xs">No image</span>
+                                            )}
                                         </td>
                                         <td className="px-6 py-4 text-sm">{record['Receipt Number'] || '—'}</td>
                                         <td className="px-6 py-4">

@@ -269,6 +269,7 @@ const VerifiedInvoicesPage: React.FC = () => {
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Link</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Upload Date</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Upload Time</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                                 </tr>
                             </thead>
@@ -365,7 +366,10 @@ const VerifiedInvoicesPage: React.FC = () => {
                                             )}
                                         </td>
                                         <td className="px-4 py-3 text-sm text-gray-600">
-                                            {record['Upload Date'] || '—'}
+                                            {record['Upload Date'] ? new Date(record['Upload Date']).toLocaleDateString() : '—'}
+                                        </td>
+                                        <td className="px-4 py-3 text-sm text-gray-600">
+                                            {record['Upload Date'] ? new Date(record['Upload Date']).toLocaleTimeString() : '—'}
                                         </td>
                                         <td className="px-4 py-3">
                                             <button

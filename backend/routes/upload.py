@@ -15,8 +15,8 @@ from utils.image_optimizer import optimize_image_for_gemini, should_optimize_ima
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Thread pool for blocking operations
-executor = ThreadPoolExecutor(max_workers=2)
+# Thread pool for blocking operations (increased for bulk uploads)
+executor = ThreadPoolExecutor(max_workers=10)
 
 # In-memory storage for processing status (in production, use Redis or database)
 processing_status: Dict[str, Dict[str, Any]] = {}
@@ -66,7 +66,8 @@ async def upload_files(
     
     # Process files in parallel but limit concurrency to avoid OOM or thread pool exhaustion
     # R2/S3 usually handles high concurrency well, but image processing is CPU/Memory intensive
-    CONCURRENCY_LIMIT = 5
+    # Increased to 20 for better bulk upload performance (100+ images)
+    CONCURRENCY_LIMIT = 20
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
     
     async def process_single_file(file: UploadFile):
@@ -94,6 +95,8 @@ async def upload_files(
                 return None
 
     # Create tasks for all files
+    total_files = len(files)
+    logger.info(f"Starting bulk upload of {total_files} files with concurrency limit of {CONCURRENCY_LIMIT}")
     tasks = [process_single_file(file) for file in files]
     
     # Wait for all to complete
@@ -101,6 +104,8 @@ async def upload_files(
     
     # Filter out None results
     uploaded_files = [res for res in results if res]
+    
+    logger.info(f"Bulk upload complete: {len(uploaded_files)}/{total_files} files uploaded successfully")
     
     return {
         "success": True,

@@ -24,6 +24,12 @@ const UploadPage: React.FC = () => {
     const [isProcessing, setIsProcessing] = useState(false);
     const [processingStatus, setProcessingStatus] = useState<any>(null);
 
+    // Upload tracking for bulk uploads
+    const [uploadedCount, setUploadedCount] = useState(0);
+    const [totalToUpload, setTotalToUpload] = useState(0);
+    const [uploadStartTime, setUploadStartTime] = useState<number | null>(null);
+    const [estimatedTimeRemaining, setEstimatedTimeRemaining] = useState<number | null>(null);
+
     // Duplicate handling - sequential workflow
     const [duplicateQueue, setDuplicateQueue] = useState<any[]>([]);
     const [currentDuplicateIndex, setCurrentDuplicateIndex] = useState(0);
@@ -35,6 +41,16 @@ const UploadPage: React.FC = () => {
     const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
     const queryClient = useQueryClient();
     const navigate = useNavigate();
+
+    // Helper function to format time remaining
+    const formatTimeRemaining = (seconds: number): string => {
+        if (seconds < 60) {
+            return `${Math.round(seconds)}s`;
+        }
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = Math.round(seconds % 60);
+        return `${minutes}m ${remainingSeconds}s`;
+    };
 
     const handleDragOver = useCallback((e: React.DragEvent) => {
         e.preventDefault();
@@ -101,52 +117,16 @@ const UploadPage: React.FC = () => {
         try {
             setIsUploading(true);
             setUploadProgress(0);
-            let fileKeys: string[] = [...uploadedFiles];
 
-            // Only upload if we have new files to upload
-            if (files.length > uploadedFiles.length) {
-                // Filter out files that are already uploaded (if any logic tracked that, but here we just re-upload or upload all normally)
-                // For simplicity in this batching logic, we'll assume we upload everything that isn't already in fileKeys
-                // But typically `files` is the source of truth.
-
-                const BATCH_SIZE = 5;
-                const totalFiles = files.length;
-                let processedCount = 0;
-
-                // Chunk files into batches
-                for (let i = 0; i < totalFiles; i += BATCH_SIZE) {
-                    const batch = files.slice(i, i + BATCH_SIZE);
-
-                    // Upload batch
-                    await uploadAPI.uploadFiles(batch, (progressEvent) => {
-                        // Calculate progress for THIS batch
-                        // But we want overall progress.
-                        // loaded / total is for the batch.
-                        // We can just estimate specific progress:
-                        // batchProgress = (loaded / total)
-                        // totalProgress = ((i + batchProgress * batch.length) / totalFiles) * 100
-                        const batchPercent = progressEvent.loaded / progressEvent.total;
-                        const validBatchSize = batch.length; // Might be less than 5 for last batch
-                        const currentBatchProgress = batchPercent * validBatchSize;
-
-                        const totalProgress = Math.round(((processedCount + currentBatchProgress) / totalFiles) * 100);
-                        setUploadProgress(totalProgress);
-                    });
-
-                    processedCount += batch.length;
-                    setUploadProgress(Math.round((processedCount / totalFiles) * 100));
-                }
-
-                // We need to get the file keys. The current uploadAPI.uploadFiles returns them.
-                // We actually need to collect them from each batch.
-                // Refactoring the loop to collect keys.
-            }
-
-            // Wait, I need to collect keys. Let's rewrite the loop properly.
-            // Reset keys since we are re-uploading or handling the full set
-            fileKeys = [];
-            const BATCH_SIZE = 5;
+            // Initialize upload tracking
             const totalFiles = files.length;
+            setTotalToUpload(totalFiles);
+            setUploadedCount(0);
+            setUploadStartTime(Date.now());
+            setEstimatedTimeRemaining(null);
+
+            let fileKeys: string[] = [];
+            const BATCH_SIZE = 5;
             let processedCount = 0;
 
             for (let i = 0; i < totalFiles; i += BATCH_SIZE) {
@@ -165,6 +145,14 @@ const UploadPage: React.FC = () => {
                 }
 
                 processedCount += batch.length;
+                setUploadedCount(processedCount);
+
+                // Calculate estimated time remaining
+                const elapsedTime = (Date.now() - (uploadStartTime || Date.now())) / 1000; // seconds
+                const avgTimePerFile = elapsedTime / processedCount;
+                const remainingFiles = totalFiles - processedCount;
+                const estimatedSeconds = avgTimePerFile * remainingFiles;
+                setEstimatedTimeRemaining(estimatedSeconds);
 
                 // Force progress update to completion for this batch
                 setUploadProgress(Math.round((processedCount / totalFiles) * 100));
@@ -173,6 +161,7 @@ const UploadPage: React.FC = () => {
             setUploadedFiles(fileKeys);
             setIsUploading(false);
             setUploadProgress(0);
+            setEstimatedTimeRemaining(null);
 
             // Start processing with forceUpload parameter
             setIsProcessing(true);
@@ -238,14 +227,18 @@ const UploadPage: React.FC = () => {
     // Sequential duplicate handling
     const handleSkipDuplicate = () => {
         const currentDup = duplicateQueue[currentDuplicateIndex];
-        setFilesToSkip([...filesToSkip, currentDup.file_key]);
-        moveToNextDuplicate();
+        const updatedSkip = [...filesToSkip, currentDup.file_key];
+        setFilesToSkip(updatedSkip);
+        moveToNextDuplicate(updatedSkip, filesToForceUpload);
     };
 
     const handleUploadAnyway = () => {
         const currentDup = duplicateQueue[currentDuplicateIndex];
-        setFilesToForceUpload([...filesToForceUpload, currentDup.file_key]);
-        moveToNextDuplicate();
+        const updatedForceUpload = [...filesToForceUpload, currentDup.file_key];
+        setFilesToForceUpload(updatedForceUpload);
+        console.log('Adding to force upload:', currentDup.file_key);
+        console.log('Updated force upload list:', updatedForceUpload);
+        moveToNextDuplicate(filesToSkip, updatedForceUpload);
     };
 
     const handleViewExisting = () => {
@@ -253,7 +246,7 @@ const UploadPage: React.FC = () => {
         // User can click Skip or Upload Anyway after viewing
     };
 
-    const moveToNextDuplicate = () => {
+    const moveToNextDuplicate = (skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload) => {
         const nextIndex = currentDuplicateIndex + 1;
 
         if (nextIndex < duplicateQueue.length) {
@@ -262,13 +255,17 @@ const UploadPage: React.FC = () => {
             setDuplicateInfo(duplicateQueue[nextIndex]);
             // Modal stays open
         } else {
-            // All duplicates handled - process remaining files
+            // All duplicates handled - close modal and process remaining files
+            console.log('All duplicates handled. Force upload list:', forceUploadList);
             setShowDuplicateModal(false);
-            processRemainingFiles();
+            setDuplicateQueue([]);
+            setDuplicateInfo(null);
+            // Pass the arrays directly to avoid React state timing issues
+            processRemainingFiles(skipList, forceUploadList);
         }
     };
 
-    const processRemainingFiles = async () => {
+    const processRemainingFiles = async (skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload) => {
         try {
             setProcessingAfterDuplicates(true);
             setIsProcessing(true);
@@ -291,13 +288,22 @@ const UploadPage: React.FC = () => {
             console.log('Processing remaining files...');
             console.log('- All uploaded files:', uploadedFiles);
             console.log('- Duplicate files detected:', duplicateFileKeys);
-            console.log('- Files to force upload (replace):', filesToForceUpload);
-            console.log('- Files to skip:', filesToSkip);
+            console.log('- Files to force upload (replace):', forceUploadList);
+            console.log('- Files to skip:', skipList);
 
             // Batch 1: Force upload duplicates (user chose to replace)
-            if (filesToForceUpload.length > 0) {
-                console.log('Processing force uploads...');
-                const forceResponse = await uploadAPI.processInvoices(filesToForceUpload, true);
+            if (forceUploadList.length > 0) {
+                console.log('✅ Processing force uploads with', forceUploadList.length, 'files');
+
+                // Clear duplicate status and show processing state
+                setProcessingStatus({
+                    task_id: '',
+                    status: 'processing',
+                    progress: { total: forceUploadList.length, processed: 0, failed: 0 },
+                    message: 'Processing replaced files...'
+                });
+
+                const forceResponse = await uploadAPI.processInvoices(forceUploadList, true);
                 setProcessingStatus(forceResponse);
 
                 // Poll for force upload completion
@@ -323,6 +329,25 @@ const UploadPage: React.FC = () => {
     };
 
     const finishProcessing = () => {
+        // Calculate how many files were actually processed
+        const totalFiles = uploadedFiles.length;
+        const skippedCount = filesToSkip.length;
+        const processedCount = totalFiles - skippedCount;
+
+        // Set a completion status message
+        setProcessingStatus({
+            task_id: '',
+            status: 'completed',
+            progress: {
+                total: totalFiles,
+                processed: processedCount,
+                failed: 0
+            },
+            message: skippedCount > 0
+                ? `Successfully processed ${processedCount} invoice${processedCount !== 1 ? 's' : ''}. Skipped ${skippedCount} duplicate${skippedCount !== 1 ? 's' : ''}.`
+                : `Successfully processed ${processedCount} invoice${processedCount !== 1 ? 's' : ''}.`
+        });
+
         setIsProcessing(false);
         setProcessingAfterDuplicates(false);
         setFiles([]);
@@ -410,11 +435,18 @@ const UploadPage: React.FC = () => {
                         <div className="mt-4">
                             <div className="flex justify-between items-center mb-2">
                                 <span className="text-sm font-medium text-gray-700">
-                                    Uploading files...
+                                    Uploading files... {uploadedCount}/{totalToUpload}
                                 </span>
-                                <span className="text-sm font-medium text-blue-600">
-                                    {uploadProgress}%
-                                </span>
+                                <div className="flex items-center gap-3">
+                                    <span className="text-sm font-medium text-blue-600">
+                                        {uploadProgress}%
+                                    </span>
+                                    {estimatedTimeRemaining !== null && estimatedTimeRemaining > 0 && (
+                                        <span className="text-xs text-gray-500">
+                                            ~{formatTimeRemaining(estimatedTimeRemaining)} remaining
+                                        </span>
+                                    )}
+                                </div>
                             </div>
                             <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
                                 <div
@@ -478,9 +510,34 @@ const UploadPage: React.FC = () => {
                                     }}
                                 />
                             </div>
+                            {/* Time Estimate */}
+                            {(() => {
+                                const processed = processingStatus.progress.processed || 0;
+                                const total = processingStatus.progress.total || 1;
+                                const remaining = total - processed;
+
+                                // Calculate estimated time if we have progress
+                                if (processed > 0 && remaining > 0 && (processingStatus as any).start_time) {
+                                    const startTime = new Date((processingStatus as any).start_time).getTime();
+                                    const now = Date.now();
+                                    const elapsedSeconds = (now - startTime) / 1000;
+                                    const avgTimePerFile = elapsedSeconds / processed;
+                                    const estimatedSecondsRemaining = Math.ceil(avgTimePerFile * remaining);
+
+                                    const minutes = Math.floor(estimatedSecondsRemaining / 60);
+                                    const seconds = estimatedSecondsRemaining % 60;
+
+                                    return (
+                                        <p className="text-xs text-blue-600 mt-2 font-medium">
+                                            ⏱️ ~{minutes > 0 ? `${minutes}m ` : ''}{seconds}s remaining
+                                        </p>
+                                    );
+                                }
+                                return null;
+                            })()}
                             {(processingStatus as any).current_file && (
                                 <p className="text-xs text-gray-600 mt-2 truncate">
-                                    Current: {(processingStatus as any).current_file}
+                                    Processing: {(processingStatus as any).current_file}
                                 </p>
                             )}
                         </div>

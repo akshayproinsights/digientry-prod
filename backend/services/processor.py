@@ -31,7 +31,7 @@ from utils.hash_utils import calculate_image_hash
 logger = logging.getLogger(__name__)
 
 # Configuration for parallel processing
-MAX_WORKERS = 3  # Process up to 3 invoices concurrently
+MAX_WORKERS = 25  # Process up to 25 invoices concurrently (increased for bulk uploads)
 
 # Gemini System Instruction - NOW LOADED DYNAMICALLY per user
 # See config_loader.get_gemini_prompt(username) for user-specific prompts
@@ -129,6 +129,126 @@ def calculate_cost_inr(input_tokens: int, output_tokens: int, model_name: str) -
     cost_inr = total_cost_usd * USD_TO_INR
     
     return round(cost_inr, 4)
+
+
+def normalize_text_field(text: str, field_type: str = "general") -> str:
+    """
+    Normalize and clean text fields with field-specific formatting.
+    
+    Args:
+        text: Raw text
+        field_type: Type of field for specific formatting rules
+            - "general": Title case (Description, Customer Name, etc.)
+            - "car_number": Uppercase, no spaces (e.g., MH12AB1234)
+            - "type": Title case (Part, Labour)
+    
+    Returns:
+        Cleaned and standardized text
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    
+    # Remove extra spaces (multiple spaces -> single space)
+    text = ' '.join(text.split())
+    
+    # Remove extra commas (multiple commas -> single comma)
+    import re
+    text = re.sub(r',+', ',', text)
+    
+    # Remove leading/trailing commas and spaces
+    text = text.strip(' ,')
+    
+    # Apply field-specific formatting
+    if field_type == "car_number":
+        # Car numbers: uppercase, remove spaces
+        text = text.upper().replace(' ', '')
+    elif field_type == "type":
+        # Type field: Title case
+        text = text.title()
+    else:
+        # General text: Title case
+        text = text.title()
+    
+    return text
+
+
+def calculate_bbox_distance(bbox1: Optional[Dict], bbox2: Optional[Dict]) -> float:
+    """
+    Calculate normalized distance between two bounding boxes.
+    Returns distance between centers as a percentage of image diagonal.
+    
+    Args:
+        bbox1: First bbox dict with x, y, width, height (normalized 0-1)
+        bbox2: Second bbox dict with x, y, width, height (normalized 0-1)
+    
+    Returns:
+        Normalized distance (0.0 = same position, 1.414 = opposite corners)
+    """
+    if not bbox1 or not bbox2:
+        return float('inf')
+    
+    try:
+        # Get centers of each bbox
+        center1_x = bbox1['x'] + bbox1['width'] / 2
+        center1_y = bbox1['y'] + bbox1['height'] / 2
+        center2_x = bbox2['x'] + bbox2['width'] / 2
+        center2_y = bbox2['y'] + bbox2['height'] / 2
+        
+        # Euclidean distance (normalized coordinates so diagonal = sqrt(2))
+        dx = center2_x - center1_x
+        dy = center2_y - center1_y
+        distance = (dx**2 + dy**2) ** 0.5
+        
+        return distance
+    except (KeyError, TypeError):
+        return float('inf')
+
+
+def should_use_combined_bbox(receipt_bbox: Optional[Dict], date_bbox: Optional[Dict], 
+                              threshold: float = 0.3) -> bool:
+    """
+    Determine if date and receipt should use a combined bbox.
+    
+    Args:
+        receipt_bbox: Receipt number bounding box
+        date_bbox: Date bounding box
+        threshold: Max normalized distance to combine (default 0.3 = 30% of diagonal)
+    
+    Returns:
+        True if bboxes are close enough to combine
+    """
+    distance = calculate_bbox_distance(receipt_bbox, date_bbox)
+    is_close = distance < threshold
+    
+    if receipt_bbox and date_bbox:
+        logger.debug(f"Bbox distance: {distance:.3f} (threshold: {threshold}) -> Combine: {is_close}")
+    
+    return is_close
+
+
+def create_combined_bbox(bbox1: Dict, bbox2: Dict) -> Dict:
+    """
+    Create a minimal bounding box that encompasses both input bboxes.
+    
+    Args:
+        bbox1: First bbox dict
+        bbox2: Second bbox dict
+    
+    Returns:
+        Combined bbox dict with normalized coordinates
+    """
+    # Find min/max coordinates
+    min_x = min(bbox1['x'], bbox2['x'])
+    min_y = min(bbox1['y'], bbox2['y'])
+    max_x = max(bbox1['x'] + bbox1['width'], bbox2['x'] + bbox2['width'])
+    max_y = max(bbox1['y'] + bbox1['height'], bbox2['y'] + bbox2['height'])
+    
+    return {
+        'x': min_x,
+        'y': min_y,
+        'width': max_x - min_x,
+        'height': max_y - min_y
+    }
 
 
 def process_single_invoice(
@@ -274,6 +394,23 @@ def process_single_invoice(
                     
                     logger.info(f"Confidences - Overall: {overall_conf}%, Receipt: {receipt_conf}%, Date: {date_conf}%")
                     
+                    # DEBUG: Check if bbox data is present in Gemini response
+                    has_bbox = any(k.endswith('_bbox') for k in header.keys())
+                    if not has_bbox:
+                        logger.warning("⚠️  BBOX MISSING: Gemini did NOT return bbox data!")
+                    else:
+                        logger.info(f"✓ BBOX FOUND: receipt_number_bbox = {header.get('receipt_number_bbox')}")
+                    
+                    # DEBUG: Check if line_item_row_bbox is present in items
+                    items = data.get("items", [])
+                    if items:
+                        sample_item = items[0]
+                        if 'line_item_row_bbox' in sample_item:
+                            logger.info(f"✓ LINE_ITEM_ROW_BBOX FOUND: {sample_item.get('line_item_row_bbox')}")
+                        else:
+                            logger.warning(f"⚠️ LINE_ITEM_ROW_BBOX MISSING! Item keys: {list(sample_item.keys())}")
+                    
+                    
                     # Check if we need to fallback to Pro model (only for Flash)
                     if model_name == PRIMARY_MODEL:
                         needs_fallback = False
@@ -282,7 +419,9 @@ def process_single_invoice(
                         # Fallback triggers:
                         # 1. Overall item accuracy < ACCURACY_THRESHOLD (70%)
                         # 2. Overall Image Confidence < ACCURACY_THRESHOLD (70%)
-                        # 3. Critical field confidence < 50%
+                        # 3. Receipt number confidence < 50%
+                        # NOTE: Date confidence is NOT checked - if date is missing from invoice,
+                        #       a better model won't help. User will manually correct in Review Dates tab.
                         
                         if accuracy < ACCURACY_THRESHOLD:
                             needs_fallback = True
@@ -293,9 +432,6 @@ def process_single_invoice(
                         elif receipt_conf < 50:
                             needs_fallback = True
                             fallback_reason_temp = f"Receipt Confidence {receipt_conf}% < 50%"
-                        elif date_conf < 50:
-                            needs_fallback = True
-                            fallback_reason_temp = f"Date Confidence {date_conf}% < 50%"
                         
                         if needs_fallback:
                             # Store Flash result and trigger Pro attempt
@@ -534,14 +670,31 @@ def convert_to_dataframe_rows(
     raw_date = header.get("date", "")
     normalized_date = normalize_date(raw_date)
     # Store dates in YYYY-MM-DD format for PostgreSQL DATE columns
-    date_to_store = format_to_db(normalized_date) if normalized_date else raw_date
+    # Use None (NULL) if date extraction failed - allows manual correction in Review Dates tab
+    if normalized_date:
+        date_to_store = format_to_db(normalized_date)
+    elif raw_date and raw_date.strip():
+        # Raw date exists but couldn't be normalized - store as-is for manual review
+        date_to_store = raw_date
+    else:
+        # No date extracted - store NULL for manual entry
+        date_to_store = None
     
     def safe_float(val, default=0):
-        """Safely convert to float, handling None and empty values"""
-        if val is None or val == "":
+        """Safely convert to float, handling None, empty values, and N/A"""
+        if val is None or val == "" or val == "N/A":
             return default
         try:
             return float(val)
+        except (ValueError, TypeError):
+            return default
+    
+    def safe_int(val, default=None):
+        """Safely convert to int, handling None, empty values, and N/A. Returns None by default for NULL in DB."""
+        if val is None or val == "" or val == "N/A":
+            return default
+        try:
+            return int(val)
         except (ValueError, TypeError):
             return default
     
@@ -581,21 +734,54 @@ def convert_to_dataframe_rows(
         row["fallback_reason"] = fallback_reason
         row["processing_errors"] = processing_errors
         
+        # Bounding box data (from Gemini, optional)
+        # Store as JSON strings for JSONB columns, handle missing gracefully
+        def get_bbox_json(data_dict, field_name):
+            """Extract bbox and convert to JSON string, or None if missing"""
+            bbox = data_dict.get(f"{field_name}_bbox")
+            if bbox and isinstance(bbox, dict):
+                return bbox  # Supabase client handles dict → JSONB automatically
+            return None
+        
+        # Header bbox (same for all line items from same receipt)
+        row["receipt_number_bbox"] = get_bbox_json(header, "receipt_number")
+        row["date_bbox"] = get_bbox_json(header, "date")
+        
+        # SMART BBOX COMBINATION LOGIC
+        # Check if we should combine date and receipt into one bbox
+        combined_bbox = None
+        receipt_bbox = row["receipt_number_bbox"]
+        date_bbox = row["date_bbox"]
+        
+        # Check if Gemini provided a combined bbox explicitly (if we update prompt later)
+        gemini_combined = header.get("date_and_receipt_combined_bbox")
+        if gemini_combined:
+             combined_bbox = gemini_combined
+        # Otherwise calculate if we should combine them based on proximity
+        elif should_use_combined_bbox(receipt_bbox, date_bbox, threshold=0.3):
+             combined_bbox = create_combined_bbox(receipt_bbox, date_bbox)
+             
+        row["date_and_receipt_combined_bbox"] = combined_bbox
+        
+        
+        # Line item bbox - only the full row bbox
+        row["line_item_row_bbox"] = get_bbox_json(item, "line_item_row")  # Entire row bbox
+        
         # Core business columns (from Gemini JSON)
         row["receipt_number"] = header.get("receipt_number", "")
         row["date"] = date_to_store
-        row["description"] = item.get("description", "")
+        row["description"] = normalize_text_field(item.get("description", ""), "general")  # Clean and standardize
         row["quantity"] = qty
         row["rate"] = rate
         row["amount"] = amount
         
-        # Industry-specific columns (automobile)
-        row["customer_name"] = header.get("customer_name", "")
-        row["mobile_number"] = header.get("mobile_number") or None
-        row["car_number"] = header.get("car_number", "")
-        row["odometer"] = header.get("odometer") or None
-        row["total_bill_amount"] = header.get("total_bill_amount") or None
-        row["type"] = item.get("type", "")
+        # Industry-specific columns (automobile) - with text normalization
+        row["customer_name"] = normalize_text_field(header.get("customer_name", ""), "general")
+        row["mobile_number"] = safe_int(header.get("mobile_number"))  # Handle N/A values
+        row["car_number"] = normalize_text_field(header.get("car_number", ""), "car_number")
+        row["odometer"] = safe_int(header.get("odometer"))  # Handle N/A values
+        row["total_bill_amount"] = safe_float(header.get("total_bill_amount"), None)  # Handle N/A values
+        row["type"] = normalize_text_field(item.get("type", ""), "type")
         
         # Medical-specific columns (will be NULL for non-medical users)
         row["patient_name"] = header.get("patient_name")
@@ -752,7 +938,7 @@ def process_invoices_batch(
         }
         
         # Collect results as they complete
-        for future in as_completed(future_to_file):
+        for future in future_to_file:
             file_key, idx = future_to_file[future]
             try:
                 rows = future.result()
@@ -1082,7 +1268,10 @@ def create_verification_records_supabase(all_rows: List[Dict[str, Any]], usernam
                     'verification_status': row.get('verification_status'),
                     'receipt_link': row.get('receipt_link'),
                     'upload_date': row.get('upload_date'),
-                    'row_id': row.get('row_id')
+                    'row_id': row.get('row_id'),
+                    'receipt_number_bbox': row.get('receipt_number_bbox'),
+                    'date_bbox': row.get('date_bbox'),
+                    'date_and_receipt_combined_bbox': row.get('date_and_receipt_combined_bbox')
                 }
                 db.insert('verification_dates', date_row)
                 date_insert_count += 1
@@ -1097,17 +1286,34 @@ def create_verification_records_supabase(all_rows: List[Dict[str, Any]], usernam
         
         amount_records = df_new.copy()
         
-        # CRITICAL: Only include records where amount_mismatch > 0
+        # CRITICAL: Add receipt_link to each row (it's a header field, not in line items)
+        if not df_new.empty and 'receipt_link' in df_new.columns:
+            # receipt_link should already be in df_new from convert_to_dataframe_rows
+            pass
+        else:
+            # Add receipt_link from the first record (all rows have same receipt_link)
+            if all_rows:
+                first_receipt_link = all_rows[0].get('receipt_link') if all_rows else None
+                if first_receipt_link:
+                    amount_records['receipt_link'] = first_receipt_link
+                    logger.info(f"Added receipt_link to {len(amount_records)} amount records: {first_receipt_link[:50]}...")
+        
+        # CRITICAL: Set verification_status based on amount_mismatch
         if 'amount_mismatch' in amount_records.columns:
-            # Convert to numeric and filter
+            # Convert to numeric
             amount_records['amount_mismatch'] = pd.to_numeric(
                 amount_records['amount_mismatch'], errors='coerce'
             ).fillna(0)
-            amount_records = amount_records[amount_records['amount_mismatch'] > 0].copy()
+            
+            # Set status based on mismatch value
+            # Done: mismatch == 0 (no review needed)
+            # Pending: mismatch > 0 (requires review)
+            amount_records['verification_status'] = amount_records['amount_mismatch'].apply(
+                lambda x: 'Done' if x == 0 else 'Pending'
+            )
         
-        # Only proceed if there are records with mismatches
+        # Proceed with all records (both Done and Pending)
         if not amount_records.empty:
-            amount_records['verification_status'] = 'Pending'
             
             # Insert amount verification records into Supabase
             amount_insert_count = 0
@@ -1115,7 +1321,7 @@ def create_verification_records_supabase(all_rows: List[Dict[str, Any]], usernam
                 try:
                     amount_row = {
                         'username': username,
-                        'verification_status': 'Pending',
+                        'verification_status': row.get('verification_status'),  # Use calculated status (Done or Pending)
                         'receipt_number': row.get('receipt_number'),
                         'description': row.get('description'),
                         'quantity': row.get('quantity'),
@@ -1123,7 +1329,9 @@ def create_verification_records_supabase(all_rows: List[Dict[str, Any]], usernam
                         'amount': row.get('amount'),
                         'amount_mismatch': row.get('amount_mismatch'),
                         'receipt_link': row.get('receipt_link'),
-                        'row_id': row.get('row_id')
+                        'row_id': row.get('row_id'),
+                        'line_item_row_bbox': row.get('line_item_row_bbox'),  # Only use row-level bbox
+                        'date_and_receipt_combined_bbox': row.get('date_and_receipt_combined_bbox')
                     }
                     db.insert('verification_amounts', amount_row)
                     amount_insert_count += 1
