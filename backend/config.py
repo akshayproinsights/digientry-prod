@@ -98,3 +98,22 @@ def get_supabase_config() -> Optional[Dict[str, str]]:
         }
     
     return None
+
+
+def get_inventory_r2_folder(username: str) -> str:
+    """
+    Get R2 folder path for inventory uploads (vendor invoices).
+    
+    Args:
+        username: Username to get folder path for
+        
+    Returns:
+        R2 folder path for inventory items
+    """
+    # For now, hardcoded for Adnak user as per requirements
+    # Future: make this configurable per user in user_configs
+    if username.lower() == "adnak":
+        return "adnak-sir-invoices/Adnak/vendor_invoices/"
+    
+    # Default fallback for other users
+    return f"{username}-invoices/{username}/vendor_invoices/"

@@ -148,6 +148,59 @@ export const reviewAPI = {
         const response = await apiClient.post('/api/review/sync-finish');
         return response.data;
     },
+
+    getSyncMetadata: async () => {
+        const response = await apiClient.get('/api/review/sync-metadata');
+        return response.data;
+    },
+
+    syncAndFinishWithProgress: (onProgress: (event: {
+        stage: string;
+        percentage: number;
+        message: string;
+        success?: boolean;
+        records_synced?: number;
+    }) => void): Promise<void> => {
+        return new Promise((resolve, reject) => {
+            // Get token from localStorage (same as axios interceptor uses)
+            const token = localStorage.getItem('auth_token');
+
+            if (!token) {
+                reject(new Error('Not authenticated'));
+                return;
+            }
+
+            // Pass token as query parameter since EventSource doesn't support headers
+            const url = `${import.meta.env.VITE_API_URL}/api/review/sync-finish/stream?token=${encodeURIComponent(token)}`;
+            const eventSource = new EventSource(url);
+
+            eventSource.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    onProgress(data);
+
+                    // Close connection on completion or error
+                    if (data.stage === 'complete') {
+                        eventSource.close();
+                        resolve();
+                    } else if (data.stage === 'error') {
+                        eventSource.close();
+                        reject(new Error(data.message));
+                    }
+                } catch (error) {
+                    console.error('Error parsing SSE event:', error);
+                    eventSource.close();
+                    reject(error);
+                }
+            };
+
+            eventSource.onerror = (error) => {
+                console.error('SSE error:', error);
+                eventSource.close();
+                reject(new Error('Connection error during sync'));
+            };
+        });
+    },
 };
 
 // Verified Invoices
@@ -189,6 +242,33 @@ export const verifiedAPI = {
         const response = await apiClient.get('/api/verified/export', {
             params: { format },
         });
+        return response.data;
+    },
+
+    exportToExcel: async (filters: {
+        search?: string;
+        date_from?: string;
+        date_to?: string;
+        receipt_number?: string;
+        vehicle_number?: string;
+        customer_name?: string;
+        description?: string;
+    }) => {
+        const response = await apiClient.get('/api/verified/export', {
+            params: { ...filters, format: 'excel' },
+            responseType: 'blob',
+        });
+
+        // Create download link
+        const url = window.URL.createObjectURL(new Blob([response.data]));
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', `verified_invoices_${new Date().toISOString().split('T')[0]}.xlsx`);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+
         return response.data;
     },
 };

@@ -75,6 +75,48 @@ class DatabaseClient:
         response = self.client.table(table).upsert(data).execute()
         return response.data
     
+    def batch_upsert(self, table: str, records: List[Dict[str, Any]], batch_size: int = 500, on_conflict: str = None) -> int:
+        """
+        Upsert records in batches for better performance
+        
+        Args:
+            table: Table name
+            records: List of records to upsert
+            batch_size: Number of records per batch (default: 500)
+            on_conflict: Column name(s) to use for conflict resolution (default: primary key)
+        
+        Returns:
+            Total number of records processed
+        """
+        if not records:
+            return 0
+        
+        total_processed = 0
+        total_batches = (len(records) + batch_size - 1) // batch_size
+        
+        logger.info(f"Batch upserting {len(records)} records to '{table}' in {total_batches} batches")
+        
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i + batch_size]
+            batch_num = (i // batch_size) + 1
+            
+            try:
+                # Use onConflict parameter if specified (for unique constraints other than primary key)
+                if on_conflict:
+                    response = self.client.table(table).upsert(batch, on_conflict=on_conflict).execute()
+                else:
+                    response = self.client.table(table).upsert(batch).execute()
+                    
+                processed = len(response.data) if response.data else len(batch)
+                total_processed += processed
+                logger.debug(f"  Batch {batch_num}/{total_batches}: {processed} records")
+            except Exception as e:
+                logger.error(f"  Batch {batch_num}/{total_batches} failed: {e}")
+                raise
+        
+        logger.info(f"✅ Batch upsert complete: {total_processed} records processed")
+        return total_processed
+    
     def update(self, table: str, data: Dict[str, Any], match: Dict[str, Any]) -> Dict[str, Any]:
         """Update records matching criteria"""
         response = self.client.table(table).update(data).match(match).execute()

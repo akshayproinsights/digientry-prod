@@ -122,9 +122,17 @@ const DuplicateWarningModal: React.FC<DuplicateWarningModalProps> = ({
                             >
                                 <Database className="mx-auto text-green-600 mb-2" size={48} />
                                 <div className="space-y-1">
-                                    <p className="text-xs text-gray-700"><strong>Receipt:</strong> {duplicateData?.receipt_number || 'N/A'}</p>
-                                    <p className="text-xs text-gray-700"><strong>Date:</strong> {duplicateData?.date || 'N/A'}</p>
-                                    <p className="text-xs text-gray-700"><strong>Customer:</strong> {duplicateData?.customer_name || 'N/A'}</p>
+                                    <p className="text-xs text-gray-700"><strong>Invoice:</strong> {duplicateData?.invoice_number || duplicateData?.receipt_number || 'N/A'}</p>
+                                    <p className="text-xs text-gray-700"><strong>Date:</strong> {duplicateData?.invoice_date || duplicateData?.date || 'N/A'}</p>
+                                    {duplicateData?.part_number && (
+                                        <p className="text-xs text-gray-700"><strong>Part:</strong> {duplicateData?.part_number}</p>
+                                    )}
+                                    {duplicateData?.description && (
+                                        <p className="text-xs text-gray-700"><strong>Desc:</strong> {duplicateData?.description}</p>
+                                    )}
+                                    {duplicateData?.customer_name && (
+                                        <p className="text-xs text-gray-700"><strong>Customer:</strong> {duplicateData?.customer_name}</p>
+                                    )}
                                     <p className="text-xs text-blue-600 mt-2 font-medium">Click to view image</p>
                                 </div>
                             </div>

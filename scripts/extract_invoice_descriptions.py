@@ -57,15 +57,37 @@ def main():
         # Let's get description and username, maybe count?
         # We need raw data first.
         
-        logger.info("Fetching verified invoices from Supabase...")
-        query = db.client.table('verified_invoices').select('description, username, row_id').execute()
-        records = query.data
+        logger.info("Fetching verified invoices (type=Part) from Supabase in batches...")
+        
+        # Fetch data in batches of 1000
+        batch_size = 1000
+        offset = 0
+        all_records = []
+        
+        while True:
+            logger.info(f"Fetching batch starting at offset {offset}...")
+            query = db.client.table('verified_invoices').select('description, username, row_id').eq('type', 'Part').range(offset, offset + batch_size - 1).execute()
+            batch_records = query.data
+            
+            if not batch_records:
+                break
+            
+            all_records.extend(batch_records)
+            logger.info(f"Fetched {len(batch_records)} records in this batch. Total so far: {len(all_records)}")
+            
+            # If we got fewer records than batch_size, we've reached the end
+            if len(batch_records) < batch_size:
+                break
+            
+            offset += batch_size
+        
+        records = all_records
         
         if not records:
             logger.warning("No verified invoices found.")
             return
 
-        logger.info(f"Found {len(records)} records.")
+        logger.info(f"Completed fetching. Total records: {len(records)}")
         
         # Process records
         processed_data = []

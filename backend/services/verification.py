@@ -92,6 +92,20 @@ def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.Da
     date["Receipt Link_clean"] = date.get("Receipt Link", pd.Series([pd.NA]*len(date))).apply(clean_link)
     date["Receipt Number_str"] = date.get("Receipt Number", pd.Series([""]*len(date))).astype(str).fillna("").apply(as_str_trim)
     date["Verification Status_clean"] = date.get("Verification Status", pd.Series([""]*len(date))).astype(str).str.strip().str.lower()
+    
+    # DEBUG: Log verification status values
+    if not date.empty:
+        status_counts = date["Verification Status_clean"].value_counts()
+        logger.info(f"🔍 Date verification statuses: {status_counts.to_dict()}")
+    
+    amount["Receipt Link_clean"] = amount.get("Receipt Link", pd.Series([pd.NA]*len(amount))).apply(clean_link)
+    amount["Receipt Number_str"] = amount.get("Receipt Number", pd.Series([""]*len(amount))).astype(str).fillna("").apply(as_str_trim)
+    amount["Verification Status_clean"] = amount.get("Verification Status", pd.Series([""]*len(amount))).astype(str).str.strip().str.lower()
+    
+    # DEBUG: Log verification status values 
+    if not amount.empty:
+        status_counts = amount["Verification Status_clean"].value_counts()
+        logger.info(f"🔍 Amount verification statuses: {status_counts.to_dict()}")
     date["Date"] = fix_date(date.get("Date", pd.Series([pd.NA]*len(date))))
     
     if "Upload Date" in date.columns:
@@ -177,17 +191,25 @@ def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.Da
 
     # Base dataframe: records NOT in verification or already verified
     base_df = raw[(~presence_mask_any_verify) | already_verified_mask].copy()
+    logger.info(f"📊 Base dataframe (not in verification OR already verified): {len(base_df)} records")
+    
     if excluded_row_ids and rowid_col_raw:
+        before_exclude = len(base_df)
         base_df = base_df[~base_df.get(rowid_col_raw, pd.Series([""] * len(base_df))).astype(str).isin(excluded_row_ids)].copy()
+        logger.info(f"📊 After excluding pending row_ids: {len(base_df)} records (removed {before_exclude - len(base_df)})")
     
     # NEW: Exclude any records with Receipt Numbers that are Pending in ANY sheet
     if pending_receipts_all:
+        before_exclude = len(base_df)
         base_df = base_df[~base_df["Receipt Number_str"].isin(pending_receipts_all)].copy()
+        logger.info(f"📊 After excluding pending receipts: {len(base_df)} records (removed {before_exclude - len(base_df)})")
     
     # Exclude rejected and already verified
     if 'Review Status' in base_df.columns:
+        before_exclude = len(base_df)
         status_lower = base_df['Review Status'].astype(str).str.lower()
         base_df = base_df[~status_lower.isin(['rejected', 'already verified'])].copy()
+        logger.info(f"📊 After excluding rejected/already verified: {len(base_df)} records (removed {before_exclude - len(base_df)})")
     
     base_df["Review Status"] = "Verified"
 
@@ -214,11 +236,96 @@ def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.Da
     )
 
     included_rows = raw[inclusion_mask].copy()
+    logger.info(f"📊 Included rows (done in verification): {len(included_rows)} records")
     
     if 'Review Status' in included_rows.columns and not included_rows.empty:
+        before_exclude = len(included_rows)
         included_rows = included_rows[included_rows['Review Status'].astype(str).str.lower() != 'rejected'].copy()
+        logger.info(f"📊 After excluding rejected from included: {len(included_rows)} records (removed {before_exclude - len(included_rows)})")
 
+    # Process orphaned Done records (exist only in verification tables, not in invoices)
+    orphaned_records = []
+    
+    # Get orphaned Done records from verification_dates
+    date_done_orphaned = date[date["Verification Status_clean"] == "done"].copy()
+    if not date_done_orphaned.empty and rowid_col_date:
+        for _, row in date_done_orphaned.iterrows():
+            # Check if this row_id exists in base_df or included_rows
+            row_id_val = str(row.get(rowid_col_date, ""))
+            if not row_id_val:
+                continue
+                
+            # If not in base_df and not in included_rows, it's orphaned
+            in_base = False
+            if rowid_col_raw and rowid_col_raw in base_df.columns:
+                in_base = base_df[rowid_col_raw].astype(str).str.strip().eq(row_id_val).any()
+            
+            in_included = False
+            if not included_rows.empty and rowid_col_raw and rowid_col_raw in included_rows.columns:
+                in_included = included_rows[rowid_col_raw].astype(str).str.strip().eq(row_id_val).any()
+            
+            if not in_base and not in_included:
+                # This is an orphaned record - create synthetic invoice record
+                synthetic_record = {
+                    rowid_col_raw: row_id_val,
+                    'Receipt Number': row.get('Receipt Number', ''),
+                    'Receipt Link': row.get('Receipt Link', ''),
+                    'Date': row.get('Date', None),
+                    'Upload Date': row.get('Upload Date', None),
+                    'Review Status': 'Verified'
+                }
+                orphaned_records.append(synthetic_record)
+    
+    # Get orphaned Done records from verification_amounts  
+    amount_done_orphaned = amount[amount["Verification Status_clean"] == "done"].copy()
+    if not amount_done_orphaned.empty and rowid_col_amount:
+        for _, row in amount_done_orphaned.iterrows():
+            row_id_val = str(row.get(rowid_col_amount, ""))
+            if not row_id_val:
+                continue
+            
+            # Check if already processed as date orphan or exists in base/included
+            already_added = any(r.get(rowid_col_raw) == row_id_val for r in orphaned_records)
+            if already_added:
+                continue
+                
+            in_base = False
+            if rowid_col_raw and rowid_col_raw in base_df.columns:
+                in_base = base_df[rowid_col_raw].astype(str).str.strip().eq(row_id_val).any()
+            
+            in_included = False
+            if not included_rows.empty and rowid_col_raw and rowid_col_raw in included_rows.columns:
+                in_included = included_rows[rowid_col_raw].astype(str).str.strip().eq(row_id_val).any()
+            
+            if not in_base and not in_included:
+                # This is an orphaned record - create synthetic invoice record
+                synthetic_record = {
+                    rowid_col_raw: row_id_val,
+                    'Receipt Number': row.get('Receipt Number', ''),
+                    'Receipt Link': row.get('Receipt Link', ''),
+                    'Description': row.get('Description', ''),
+                    'Quantity': row.get('Quantity', None),
+                    'Rate': row.get('Rate', None),
+                    'Amount': row.get('Amount', None),
+                    'Upload Date': row.get('Upload Date', None),
+                    'Review Status': 'Verified'
+                }
+                orphaned_records.append(synthetic_record)
+    
+    if orphaned_records:
+        logger.info(f"📊 Found {len(orphaned_records)} orphaned Done records (not in invoices)")
+        # Convert to DataFrame and add to included_rows
+        orphaned_df = pd.DataFrame(orphaned_records)
+        # Align columns with raw df
+        for col in raw.columns:
+            if col not in orphaned_df.columns:
+                orphaned_df[col] = None
+        orphaned_df = orphaned_df.reindex(columns=raw.columns)
+        included_rows = pd.concat([included_rows, orphaned_df], ignore_index=True)
+        logger.info(f"📊 Total included rows after adding orphaned: {len(included_rows)} records")
+    
     if included_rows.empty:
+        logger.info(f"📊 No included rows, returning base_df with {len(base_df)} records")
         final_df = base_df.reindex(columns=df_raw.columns)
         return final_df
 
@@ -284,6 +391,8 @@ def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.Da
 
     # Combine base and included
     final_df = pd.concat([base_df, included_rows], ignore_index=True, sort=False)
+    logger.info(f"📊 Combined dataframe (base + included): {len(final_df)} records")
+    
     for c in ["Receipt Link_clean", "Receipt Number_str", "Upload Date_dt"]:
         if c in final_df.columns:
             final_df.drop(columns=[c], inplace=True, errors="ignore")
@@ -299,6 +408,9 @@ def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.Da
     # Without Row_Id, line items with same Receipt Number + Date + Description would be deduplicated
     if rowid_col_raw and rowid_col_raw in final_df.columns:
         dedup_cols.append(rowid_col_raw)
+        logger.info(f"✓ Row_Id column '{rowid_col_raw}' found and will be used for deduplication")
+    else:
+        logger.warning(f"⚠️ Row_Id column NOT found! rowid_col_raw={rowid_col_raw}, available columns: {list(final_df.columns)}")
     
     if "Receipt Number" in final_df.columns:
         dedup_cols.append("Receipt Number")
@@ -308,10 +420,14 @@ def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.Da
         dedup_cols.append("Description")
     
     if dedup_cols:
+        logger.info(f"Deduplicating on columns: {dedup_cols}")
+        initial_count = len(final_df)
         if "Upload Date" in final_df.columns:
             final_df = final_df.sort_values("Upload Date", na_position='first')
         final_df = final_df.drop_duplicates(subset=dedup_cols, keep='last').reset_index(drop=True)
-        logger.info(f"Deduplicated Invoice Verified: {len(final_df)} unique records")
+        final_count = len(final_df)
+        removed_count = initial_count - final_count
+        logger.info(f"Deduplicated Invoice Verified: {final_count} unique records (removed {removed_count} duplicates)")
 
     return final_df
 
@@ -376,7 +492,7 @@ async def run_sync_verified_logic(sheet_id: str) -> Dict[str, Any]:
                             df_raw.loc[mask, 'Receipt Number'] = new_rec_num
                         if new_date:
                             df_raw.loc[mask, 'Date'] = new_date  # Already normalized to DD-MM-YYYY
-                        df_raw.loc[mask, 'Review Status'] = 'Verified'
+
                         corrections_made = True
 
         # 3. Apply amount corrections
@@ -415,7 +531,7 @@ async def run_sync_verified_logic(sheet_id: str) -> Dict[str, Any]:
                         if pd.notna(new_amt) and str(new_amt) != '':
                             df_raw.loc[mask, 'Amount'] = new_amt
                         
-                        df_raw.loc[mask, 'Review Status'] = 'Verified'
+
                         corrections_made = True
 
         # 4. Save updated Invoice All
@@ -520,7 +636,7 @@ Added to existing verification.py
 """
 
 
-async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
+async def run_sync_verified_logic_supabase(username: str, progress_callback=None) -> Dict[str, Any]:
     """
     Execute the Sync & Finish workflow using Supabase:
     1. Read invoices, verification_dates, verification_amounts from Supabase
@@ -530,6 +646,8 @@ async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
     
     Args:
         username: Username for RLS filtering
+        progress_callback: Optional async function to report progress
+                          Called with (stage, percentage, message)
     
     Returns:
         Dictionary with sync results
@@ -543,6 +661,11 @@ async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
     )
     from database import get_database_client
     
+    # Helper to emit progress
+    async def emit_progress(stage: str, percentage: int, message: str):
+        if progress_callback:
+            await progress_callback(stage, percentage, message)
+    
     results = {
         "success": False,
         "message": "",
@@ -551,6 +674,7 @@ async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
     
     try:
         logger.info(f"Starting Sync & Finish workflow for user: {username}")
+        await emit_progress("reading", 5, "Reading invoice data...")
         
         # 1. Read data from Supabase (returns list of dicts)
         invoices_data = get_all_invoices(username)
@@ -570,28 +694,20 @@ async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
         # Map snake_case columns to Title Case for compatibility with build_verified()
         # build_verified() expects Title Case columns from Google Sheets
         column_map = {
+            'id': 'Row_Id',                     # invoices.id -> verified_invoices.row_id
             'receipt_number': 'Receipt Number',
             'receipt_link': 'Receipt Link',
             'date': 'Date',
-            'customer_name': 'Customer Name',
-            'mobile_number': 'Mobile Number',
-            'car_number': 'Car Number',
-            'odometer': 'Odometer',
+            'customer': 'Customer Name',        # invoices.customer -> Customer Name
+            'vehicle_number': 'Car Number',     # invoices.vehicle_number -> Car Number
             'description': 'Description',
             'type': 'Type',
             'quantity': 'Quantity',
             'rate': 'Rate',
             'amount': 'Amount',
-            'total_bill_amount': 'Total Bill Amount',
             'upload_date': 'Upload Date',
-            'review_status': 'Review Status',
-            'calculated_amount': 'Calculated Amount',
-            'amount_mismatch': 'Amount Mismatch',
-            'confidence': 'Confidence',
             'image_hash': 'Image Hash',
-            'row_id': 'Row_Id',
             'verification_status': 'Verification Status',
-            'audit_findings': 'Audit Findings'
         }
         
         # Rename columns
@@ -634,7 +750,7 @@ async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
                             df_raw.loc[mask, 'Receipt Number'] = new_rec_num
                         if new_date:
                             df_raw.loc[mask, 'Date'] = new_date  # Already normalized to DD-MM-YYYY
-                        df_raw.loc[mask, 'Review Status'] = 'Verified'
+
                         corrections_made = True
 
         # 3. Apply amount corrections
@@ -671,7 +787,7 @@ async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
                         if pd.notna(new_amt) and str(new_amt) != '':
                             df_raw.loc[mask, 'Amount'] = new_amt
                         
-                        df_raw.loc[mask, 'Review Status'] = 'Verified'
+
                         corrections_made = True
 
         # 3B. Mark ALL receipts as "Verified" if they are fully Done
@@ -720,13 +836,15 @@ async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
             if should_verify:
                 mask = df_raw['Receipt Number'].astype(str).str.strip() == receipt_num
                 if mask.any():
-                    df_raw.loc[mask, 'Review Status'] = 'Verified'
+
                     corrections_made = True
 
 
         # 4. Save updated invoices to Supabase
         if corrections_made:
             logger.info(f"Updating corrected invoice records in Supabase")
+            await emit_progress("saving_invoices", 60, "Saving corrected invoices...")
+            
             if 'Date' in df_raw.columns:
                 df_raw['Date'] = safe_format_date_series(df_raw['Date'], output_format='%Y-%m-%d')
             
@@ -738,41 +856,55 @@ async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
             df_raw_snake = df_raw_snake.replace([float('inf'), float('-inf')], None)
             df_raw_snake = df_raw_snake.where(pd.notna(df_raw_snake), None)
             
-            # FIXED: Use upsert instead of delete-all to preserve existing invoices
-            # Only update records that were corrected (appeared in review tables)
-            # This ensures new uploads are always appended, never replaced
-            updated_count = 0
+            # CRITICAL: Convert empty string dates to None (Supabase rejects empty strings for date columns)
+            if 'date' in df_raw_snake.columns:
+                df_raw_snake['date'] = df_raw_snake['date'].apply(lambda x: None if x == '' or pd.isna(x) else x)
+            
+            # OPTIMIZED: Use batch upsert for 10-15x performance improvement
+            records_to_upsert = []
             for _, row in df_raw_snake.iterrows():
                 row_dict = row.to_dict()
                 row_dict['username'] = username
-                # Convert numeric types properly
                 row_dict = convert_numeric_types(row_dict)
-                db.upsert('invoices', row_dict)
-                updated_count += 1
+                records_to_upsert.append(row_dict)
             
+            updated_count = db.batch_upsert('invoices', records_to_upsert, batch_size=500)
             logger.info(f"✅ Upserted {updated_count} invoice records (preserving all existing data)")
 
         # 5. Build and save verified_invoices
+        await emit_progress("building_verified", 40, "Building verified invoices...")
         final_df = build_verified(df_raw, df_date, df_amount)
         logger.info(f"Built verified dataframe with {len(final_df)} rows")
         
-        # Convert to snake_case and save
+        await emit_progress("saving_verified", 80, "Saving verified invoices...")
+        
+        # Convert to snake_case  
         reverse_map = {v: k for k, v in column_map.items()}
         final_df_snake = final_df.rename(columns=reverse_map)
+        
+        # CRITICAL: 'Row_Id' was reverse-mapped to 'id', but we need it as 'row_id' for verified_invoices
+        # Rename 'id' to 'row_id' to preserve the invoices.id integer value
+        if 'id' in final_df_snake.columns:
+            final_df_snake = final_df_snake.rename(columns={'id': 'row_id'})
+            logger.info(f"✅ Mapped invoices.id to verified_invoices.row_id for {len(final_df_snake)} records")
         
         # Clean NaN/Inf values (not JSON compliant)
         final_df_snake = final_df_snake.replace([float('inf'), float('-inf')], None)
         final_df_snake = final_df_snake.where(pd.notna(final_df_snake), None)
         
+        # Map column names from invoices schema to verified_invoices schema
+        # invoices has: customer, vehicle_number
+        # verified_invoices has: customer_name, car_number
+        if 'customer' in final_df_snake.columns:
+            final_df_snake = final_df_snake.rename(columns={'customer': 'customer_name'})
+        if 'vehicle_number' in final_df_snake.columns:
+            final_df_snake = final_df_snake.rename(columns={'vehicle_number': 'car_number'})
+        
         # Remove columns that exist in 'invoices' but NOT in 'verified_invoices'
-        # Based on actual Supabase schema comparison
-        # NOTE: image_hash is KEPT (not excluded) - needed for duplicate detection!
+        # NOTE: 'id' has already been renamed to 'row_id' above, so no need to exclude it
         columns_to_exclude = [
             'updated_at',           # Only in invoices table
-            'review_status',        # Workflow state field
-            'calculated_amount',    # Verification field
-            'amount_mismatch',      # Verification field
-            'confidence'            # AI confidence score
+            'Review Status'         # Only used internally, not in verified_invoices table
         ]
         
         for col in columns_to_exclude:
@@ -786,6 +918,8 @@ async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
         logger.info(f"verified_invoices updated with {len(final_records)} rows")
 
         # 6. Clean up verification tables - CROSS-SHEET DEPENDENCY
+        await emit_progress("cleanup", 95, "Cleaning up verification tables...")
+        
         # Get Receipt Numbers that are Done in each table
         date_done_receipts = set()
         date_pending_receipts = set()

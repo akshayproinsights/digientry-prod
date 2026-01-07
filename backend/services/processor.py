@@ -551,7 +551,8 @@ def check_duplicate_invoice(image_hash: str, username: str) -> Optional[Dict[str
         db = get_database_client()
         
         # First check invoices table (in-progress/review invoices)
-        fields = ['row_id', 'receipt_number', 'date', 'customer_name', 'total_bill_amount', 
+        # Note: invoices uses 'id' as primary key, not 'row_id'
+        fields = ['id', 'receipt_number', 'date', 'customer', 
                   'receipt_link', 'upload_date', 'image_hash']
         result = db.query('invoices', fields) \
                     .eq('image_hash', image_hash) \
@@ -565,7 +566,10 @@ def check_duplicate_invoice(image_hash: str, username: str) -> Optional[Dict[str
             return duplicate_row
         
         # If not found in invoices, check verified_invoices table (completed invoices)
-        result_verified = db.query('verified_invoices', fields) \
+        # Note: verified_invoices uses 'row_id', not 'id'
+        fields_verified = ['row_id', 'receipt_number', 'date', 'customer_name', 'total_bill_amount', 
+                          'receipt_link', 'upload_date', 'image_hash']
+        result_verified = db.query('verified_invoices', fields_verified) \
                             .eq('image_hash', image_hash) \
                             .eq('username', username) \
                             .limit(1) \
@@ -776,9 +780,10 @@ def convert_to_dataframe_rows(
         row["amount"] = amount
         
         # Industry-specific columns (automobile) - with text normalization
-        row["customer_name"] = normalize_text_field(header.get("customer_name", ""), "general")
+        # IMPORTANT: Use exact column names from invoices table schema
+        row["customer"] = normalize_text_field(header.get("customer_name", ""), "general")
         row["mobile_number"] = safe_int(header.get("mobile_number"))  # Handle N/A values
-        row["car_number"] = normalize_text_field(header.get("car_number", ""), "car_number")
+        row["vehicle_number"] = normalize_text_field(header.get("car_number", ""), "car_number")
         row["odometer"] = safe_int(header.get("odometer"))  # Handle N/A values
         row["total_bill_amount"] = safe_float(header.get("total_bill_amount"), None)  # Handle N/A values
         row["type"] = normalize_text_field(item.get("type", ""), "type")
@@ -971,8 +976,52 @@ def process_invoices_batch(
             
             for row in all_rows:
                 try:
+                    # Remove columns that don't exist in invoices table
+                    # invoices schema: id, username, receipt_number, date, customer, vehicle_number,
+                    #                  description, type, quantity, rate, amount, receipt_link,
+                    #                  upload_date, image_hash, created_at, updated_at
+                    # 
+                    # Note: Many fields like customer_name, mobile_number, etc. are NOT in invoices
+                    # but WILL BE in verified_invoices, so we keep them in the row data for later use
+                    excluded_columns = {
+                        'amount_mismatch',      # Only for verification_amounts table
+                        'calculated_amount',    # Only for verification tables  
+                        'row_id',              # invoices uses 'id' as primary key
+                        'review_status',       # Not in invoices table
+                        'confidence',          # Not in invoices
+                        'receipt_number_bbox', # Not in invoices
+                        'date_bbox',           # Not in invoices
+                        'date_and_receipt_combined_bbox',  # Not in invoices
+                        'line_item_row_bbox',  # Not in invoices
+                        'description_bbox',    # Not in invoices
+                        'quantity_bbox',       # Not in invoices
+                        'rate_bbox',           # Not in invoices
+                        'amount_bbox',         # Not in invoices
+                        'mobile_number',       # Not in invoices
+                        'odometer',            # Not in invoices
+                        'total_bill_amount',   # Not in invoices
+                        'patient_name',        # Not in invoices
+                        'patient_id',          # Not in invoices
+                        'prescription_number', # Not in invoices
+                        'doctor_name',         # Not in invoices
+                        'lab_test_code',       # Not in invoices
+                        'industry_type',       # Not in invoices
+                        'model_used',          # Not in invoices
+                        'model_accuracy',      # Not in invoices
+                        'input_tokens',        # Not in invoices
+                        'output_tokens',       # Not in invoices
+                        'total_tokens',        # Not in invoices
+                        'cost_inr',            # Not in invoices
+                        'fallback_attempted',  # Not in invoices
+                        'fallback_reason',     # Not in invoices
+                        'processing_errors',   # Not in invoices
+                        'mapped_inventory_item_id'  # Not in invoices
+                    }
+                    
+                    row_for_invoices = {k: v for k, v in row.items() if k not in excluded_columns}
+                    
                     # Use upsert to handle duplicates (update if exists)
-                    db.upsert('invoices', row)
+                    db.upsert('invoices', row_for_invoices)
                     saved_count += 1
                 except Exception as e:
                     logger.error(f"Failed to upsert row {row.get('row_id')}:  {e}")

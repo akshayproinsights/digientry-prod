@@ -1,5 +1,5 @@
 """Review workflow routes"""
-from fastapi import APIRouter, HTTPException, Depends, Body
+from fastapi import APIRouter, HTTPException, Depends, Body, Request
 from pydantic import BaseModel
 from typing import List, Dict, Any
 import logging
@@ -114,11 +114,22 @@ async def update_single_review_date(
         from database_helpers import convert_numeric_types
         record = convert_numeric_types(record)
         
+        # Filter to only columns that exist in verification_dates
+        valid_cols = {
+            'id', 'username', 'receipt_number', 'date', 'audit_findings',
+            'verification_status', 'receipt_link', 'upload_date', 'row_id',
+            'created_at', 'model_used', 'model_accuracy', 'input_tokens',
+            'output_tokens', 'total_tokens', 'cost_inr', 'fallback_attempted',
+            'fallback_reason', 'processing_errors', 'date_and_receipt_combined_bbox',
+            'receipt_number_bbox', 'date_bbox'
+        }
+        filtered_record = {k: v for k, v in record.items() if k in valid_cols}
+        
         # Delete the old record
         db.delete('verification_dates', {'username': username, 'row_id': row_id})
         
         # Insert the updated record
-        db.insert('verification_dates', record)
+        db.insert('verification_dates', filtered_record)
         
         logger.info(f"Updated verification_dates record {row_id} for {username}")
         
@@ -130,6 +141,53 @@ async def update_single_review_date(
     except Exception as e:
         logger.error(f"Error updating verification_dates: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to update record: {str(e)}")
+
+
+@router.delete("/record/{row_id}")
+async def delete_verification_record(
+    row_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Delete a record from all tables (verification_dates, verification_amounts, invoices) by row_id
+    """
+    username = current_user.get("username")
+    
+    if not username:
+        raise HTTPException(status_code=400, detail="No username in token")
+    
+    try:
+        db = get_database_client()
+        
+        total_deleted = 0
+        
+        # Delete from verification tables (they use row_id)
+        verification_tables = ['verification_dates', 'verification_amounts']
+        
+        for table_name in verification_tables:
+            try:
+                result = db.delete(table_name, {'username': username, 'row_id': row_id})
+                if result:
+                    deleted_count = len(result) if isinstance(result, list) else 1
+                    total_deleted += deleted_count
+                    logger.info(f"Deleted {deleted_count} records from {table_name} (row_id: {row_id})")
+            except Exception as e:
+                logger.warning(f"Error cleaning {table_name} for row_id {row_id}: {e}")
+                continue
+        
+        # For invoices table, try to find by matching receipt_number if needed
+        # (invoices table uses 'id' column, not 'row_id')
+        # We skip invoices deletion since row_id format doesn't match id format
+        
+        return {
+            "success": True,
+            "message": f"Record {row_id} deleted from verification tables",
+            "records_deleted": total_deleted
+        }
+        
+    except Exception as e:
+        logger.error(f"Error deleting record {row_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete record: {str(e)}")
 
 
 @router.delete("/receipt/{receipt_number}")
@@ -274,11 +332,24 @@ async def update_single_review_amount(
         from database_helpers import convert_numeric_types
         record = convert_numeric_types(record)
         
+        # Filter to only columns that exist in verification_amounts
+        valid_cols = {
+            'id', 'username', 'receipt_number', 'description', 'quantity',
+            'rate', 'amount', 'amount_mismatch', 'verification_status',
+            'receipt_link', 'row_id', 'created_at', 'model_used',
+            'model_accuracy', 'input_tokens', 'output_tokens', 'total_tokens',
+            'cost_inr', 'fallback_attempted', 'fallback_reason',
+            'processing_errors', 'line_item_row_bbox', 'date_and_receipt_combined_bbox',
+            'receipt_number_bbox', 'description_bbox', 'quantity_bbox',
+            'rate_bbox', 'amount_bbox'
+        }
+        filtered_record = {k: v for k, v in record.items() if k in valid_cols}
+        
         # Delete the old record
         db.delete('verification_amounts', {'username': username, 'row_id': row_id})
         
         # Insert the updated record
-        db.insert('verification_amounts', record)
+        db.insert('verification_amounts', filtered_record)
         
         logger.info(f"Updated verification_amounts record {row_id} for {username}")
         
@@ -302,6 +373,7 @@ async def sync_and_finish(
     1. Update invoices table with corrected values from review tables
     2. Rebuild verified_invoices table
     3. Clean up review tables (remove Done/Already Verified/Rejected)
+    4. Record sync metadata for user visibility
     """
     username = current_user.get("username")
     
@@ -311,11 +383,29 @@ async def sync_and_finish(
     try:
         # Import and call the verification logic (migrated version)
         from services.verification import run_sync_verified_logic_supabase
+        from datetime import datetime
         
         logger.info(f"Sync & Finish triggered for user: {username}")
         
         # Execute sync
         results = await run_sync_verified_logic_supabase(username)
+        
+        # Track sync metadata
+        if results["success"]:
+            try:
+                db = get_database_client()
+                sync_metadata = {
+                    "username": username,
+                    "sync_timestamp": datetime.utcnow().isoformat(),
+                    "records_processed": results.get("records_synced", 0),
+                    "sync_type": "full",
+                    "created_at": datetime.utcnow().isoformat()
+                }
+                db.insert('sync_metadata', sync_metadata)
+                logger.info(f"Sync metadata recorded for {username}")
+            except Exception as meta_error:
+                logger.warning(f"Failed to record sync metadata: {meta_error}")
+                # Don't fail the whole sync if metadata tracking fails
         
         return {
             "success": results["success"],
@@ -326,3 +416,163 @@ async def sync_and_finish(
     except Exception as e:
         logger.error(f"Error in sync and finish: {e}")
         raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+
+@router.get("/sync-finish/stream")
+async def sync_and_finish_stream(
+    request: Request,
+    token: str = None
+):
+    """
+    Execute Sync & Finish with Server-Sent Events (SSE) for real-time progress
+    
+    SSE Event Format:
+    {
+        "stage": "reading"|"saving_invoices"|"building_verified"|"saving_verified"|"cleanup"|"complete",
+        "percentage": 0-100,
+        "message": "Human-readable status message"
+    }
+    """
+    # Extract token from query param, cookie, or Authorization header
+    auth_token = token or request.cookies.get("access_token") or request.headers.get("authorization", "").replace("Bearer ", "")
+    
+    if not auth_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    # Verify token
+    from auth import decode_access_token
+    payload = decode_access_token(auth_token)
+    
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+        
+    username = payload.get("sub")  # JWT standard uses 'sub' for subject/username
+    
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    from fastapi.responses import StreamingResponse
+    from services.verification import run_sync_verified_logic_supabase
+    import json
+    import asyncio
+    
+    async def event_generator():
+        try:
+            logger.info(f"SSE Sync & Finish triggered for user: {username}")
+            
+            # Track progress events to yield
+            progress_events = []
+            
+            # Progress callback to collect events
+            async def progress_callback(stage: str, percentage: int, message: str):
+                event_data = {
+                    "stage": stage,
+                    "percentage": percentage,
+                    "message": message
+                }
+                progress_events.append(event_data)
+            
+            # Execute sync with progress tracking
+            results = await run_sync_verified_logic_supabase(username, progress_callback=progress_callback)
+            
+            # Yield all collected events
+            for event in progress_events:
+                yield f"data: {json.dumps(event)}\n\n"
+                await asyncio.sleep(0.01)
+            
+            # Record sync metadata
+            try:
+                from datetime import datetime
+                db = get_database_client()
+                sync_record = {
+                    'username': username,
+                    'sync_timestamp': datetime.utcnow().isoformat(),
+                    'records_processed': results.get('records_synced', 0),
+                    'sync_type': 'full',
+                    'created_at': datetime.utcnow().isoformat()
+                }
+                db.insert('sync_metadata', sync_record)
+                logger.info(f"Sync metadata recorded for {username}")
+            except Exception as e:
+                logger.error(f"Failed to record sync metadata: {e}")
+            
+            # Send completion event
+            completion_data = {
+                "stage": "complete",
+                "percentage": 100,
+                "message": "Sync complete!",
+                "success": results["success"],
+                "records_synced": results.get("records_synced", 0)
+            }
+            yield f"data: {json.dumps(completion_data)}\n\n"
+            
+        except Exception as e:
+            logger.error(f"Error in SSE sync: {e}")
+            error_data = {
+                "stage": "error",
+                "percentage": 0,
+                "message": f"Sync failed: {str(e)}",
+                "success": False
+            }
+            yield f"data: {json.dumps(error_data)}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@router.get("/sync-metadata")
+async def get_sync_metadata(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Get the last sync metadata for the current user
+    Returns information about when the user last synced and how many records were processed
+    """
+    username = current_user.get("username")
+    
+    if not username:
+        raise HTTPException(status_code=400, detail="No username in token")
+    
+    try:
+        db = get_database_client()
+        
+        # Query for the most recent sync metadata
+        result = db.client.table('sync_metadata') \
+            .select('*') \
+            .eq('username', username) \
+            .order('sync_timestamp', desc=True) \
+            .limit(1) \
+            .execute()
+        
+        if result.data and len(result.data) > 0:
+            metadata = result.data[0]
+            return {
+                "has_synced": True,
+                "sync_timestamp": metadata.get('sync_timestamp'),
+                "records_processed": metadata.get('records_processed', 0),
+                "sync_type": metadata.get('sync_type', 'full')
+            }
+        else:
+            return {
+                "has_synced": False,
+                "sync_timestamp": None,
+                "records_processed": 0,
+                "sync_type": None
+            }
+    
+    except Exception as e:
+        logger.error(f"Error fetching sync metadata: {e}")
+        # Don't fail hard, just return no metadata
+        return {
+            "has_synced": False,
+            "sync_timestamp": None,
+            "records_processed": 0,
+            "sync_type": None
+        }

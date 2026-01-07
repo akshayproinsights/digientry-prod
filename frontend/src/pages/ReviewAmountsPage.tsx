@@ -4,11 +4,18 @@ import { reviewAPI } from '../services/api';
 import { RefreshCw, Loader2, Trash2 } from 'lucide-react';
 import CroppedFieldPreview from '../components/CroppedFieldPreview';
 import StatusToggle from '../components/StatusToggle';
+import SyncProgressModal from '../components/SyncProgressModal';
 
 const ReviewAmountsPage: React.FC = () => {
     const [records, setRecords] = useState<any[]>([]);
     const [hasChanges, setHasChanges] = useState(false);
     const [showCompleted, setShowCompleted] = useState(false);  // Toggle to show/hide completed records
+    const [syncProgress, setSyncProgress] = useState({
+        isOpen: false,
+        stage: '',
+        percentage: 0,
+        message: ''
+    });
     const queryClient = useQueryClient();
 
     // Debounce timer for auto-save (wait 500ms after user stops typing)
@@ -94,14 +101,43 @@ const ReviewAmountsPage: React.FC = () => {
         // Debounced save - wait 500ms after user stops typing
         saveTimeoutRef.current = setTimeout(() => {
             // All validations passed - save to database
-            console.log('Auto-saving record after debounce...');
             updateRowMutation.mutate({ record: updated[originalIndex] });
         }, 500); // Wait 500ms after last keystroke
     };
 
-    const handleSyncFinish = () => {
-        if (confirm('Are you sure you want to Sync & Finish? This will finalize all verified invoices.')) {
-            syncMutation.mutate();
+    const handleSyncFinish = async () => {
+        if (!confirm('Are you sure you want to Sync & Finish? This will finalize all verified invoices.')) {
+            return;
+        }
+
+        try {
+            // Open progress modal
+            setSyncProgress({
+                isOpen: true,
+                stage: 'reading',
+                percentage: 0,
+                message: 'Starting sync...'
+            });
+
+            // Execute sync with progress updates
+            await reviewAPI.syncAndFinishWithProgress((event) => {
+                setSyncProgress({
+                    isOpen: true,
+                    stage: event.stage,
+                    percentage: event.percentage,
+                    message: event.message
+                });
+            });
+
+            // Close modal and refresh data
+            setSyncProgress({ isOpen: false, stage: '', percentage: 0, message: '' });
+            queryClient.invalidateQueries({ queryKey: ['review-dates'] });
+            queryClient.invalidateQueries({ queryKey: ['review-amounts'] });
+            queryClient.invalidateQueries({ queryKey: ['verified'] });
+            alert('All changes have been saved and verified successfully!');
+        } catch (error) {
+            setSyncProgress({ isOpen: false, stage: '', percentage: 0, message: '' });
+            alert(`Error: ${error instanceof Error ? error.message : 'Unable to complete operation. Please try again.'}`);
         }
     };
 
@@ -287,6 +323,14 @@ const ReviewAmountsPage: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            {/* Sync Progress Modal */}
+            <SyncProgressModal
+                isOpen={syncProgress.isOpen}
+                stage={syncProgress.stage}
+                percentage={syncProgress.percentage}
+                message={syncProgress.message}
+            />
         </div>
     );
 };

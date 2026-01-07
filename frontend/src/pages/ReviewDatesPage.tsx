@@ -4,12 +4,19 @@ import { reviewAPI } from '../services/api';
 import { RefreshCw, Loader2, Trash2 } from 'lucide-react';
 import CroppedFieldPreview from '../components/CroppedFieldPreview';
 import StatusToggle from '../components/StatusToggle';
+import SyncProgressModal from '../components/SyncProgressModal';
 
 const ReviewDatesPage: React.FC = () => {
     const [records, setRecords] = useState<any[]>([]);
     const [hasChanges, setHasChanges] = useState(false);
     const [showSuccessFor, setShowSuccessFor] = useState<{ [key: string]: boolean }>({});
     const [showCompleted, setShowCompleted] = useState(false);  // Toggle to show/hide completed records
+    const [syncProgress, setSyncProgress] = useState({
+        isOpen: false,
+        stage: '',
+        percentage: 0,
+        message: ''
+    });
     const queryClient = useQueryClient();
 
     // Debounce timer for auto-save (wait 500ms after user stops typing)
@@ -25,6 +32,28 @@ const ReviewDatesPage: React.FC = () => {
             return data;
         },
     });
+
+    // Calculate status counts from ALL records (not just filtered)
+    const statusCounts = useMemo(() => {
+        const counts = {
+            pending: 0,
+            completed: 0,
+            duplicates: 0
+        };
+
+        records.forEach(r => {
+            const status = (r['Verification Status'] || 'Pending').toLowerCase();
+            if (status === 'pending') {
+                counts.pending++;
+            } else if (status === 'done') {
+                counts.completed++;
+            } else if (status === 'duplicate receipt number') {
+                counts.duplicates++;
+            }
+        });
+
+        return counts;
+    }, [records]);
 
     // Filter records based on showCompleted toggle
     const filteredRecords = useMemo(() => {
@@ -72,6 +101,7 @@ const ReviewDatesPage: React.FC = () => {
             queryClient.invalidateQueries({ queryKey: ['review-dates'] });
             queryClient.invalidateQueries({ queryKey: ['review-amounts'] });
             queryClient.invalidateQueries({ queryKey: ['verified'] });
+            queryClient.invalidateQueries({ queryKey: ['sync-metadata'] });
             alert('All changes have been saved and verified successfully!');
         },
         onError: (error) => {
@@ -125,7 +155,6 @@ const ReviewDatesPage: React.FC = () => {
             }
 
             // All validations passed - save to database
-            console.log('Auto-saving record after debounce...');
             updateRowMutation.mutate({ record: recordToSave });
 
             // Show success message temporarily
@@ -144,7 +173,7 @@ const ReviewDatesPage: React.FC = () => {
         }, 500); // Wait 500ms after last keystroke
     };
 
-    const handleSyncFinish = () => {
+    const handleSyncFinish = async () => {
         // Validate all records before syncing
         const invalidRecords = sortedRecords.filter(r =>
             !r['Date'] || r['Date'].trim() === '' ||
@@ -156,8 +185,39 @@ const ReviewDatesPage: React.FC = () => {
             return;
         }
 
-        if (confirm('Are you sure you want to Sync & Finish? This will finalize all verified invoices.')) {
-            syncMutation.mutate();
+        if (!confirm('Are you sure you want to Sync & Finish? This will finalize all verified invoices.')) {
+            return;
+        }
+
+        try {
+            // Open progress modal
+            setSyncProgress({
+                isOpen: true,
+                stage: 'reading',
+                percentage: 0,
+                message: 'Starting sync...'
+            });
+
+            // Execute sync with progress updates
+            await reviewAPI.syncAndFinishWithProgress((event) => {
+                setSyncProgress({
+                    isOpen: true,
+                    stage: event.stage,
+                    percentage: event.percentage,
+                    message: event.message
+                });
+            });
+
+            // Close modal and refresh data
+            setSyncProgress({ isOpen: false, stage: '', percentage: 0, message: '' });
+            queryClient.invalidateQueries({ queryKey: ['review-dates'] });
+            queryClient.invalidateQueries({ queryKey: ['review-amounts'] });
+            queryClient.invalidateQueries({ queryKey: ['verified'] });
+            queryClient.invalidateQueries({ queryKey: ['sync-metadata'] });
+            alert('All changes have been saved and verified successfully!');
+        } catch (error) {
+            setSyncProgress({ isOpen: false, stage: '', percentage: 0, message: '' });
+            alert(`Error: ${error instanceof Error ? error.message : 'Unable to complete operation. Please try again.'}`);
         }
     };
 
@@ -209,186 +269,271 @@ const ReviewDatesPage: React.FC = () => {
     }
 
     return (
-        <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-3xl font-bold text-gray-900">Review Dates & Receipts</h1>
-                    <p className="text-gray-600 mt-2">
-                        Verify and correct receipt numbers and dates
-                    </p>
-                </div>
-                <div className="flex space-x-3">
-                    <button
-                        onClick={() => setShowCompleted(!showCompleted)}
-                        className={`flex items-center px-4 py-2 rounded-lg transition ${showCompleted
-                            ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                            : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                            }`}
-                    >
-                        {showCompleted ? '✓ Showing Completed' : 'Show Completed'}
-                    </button>
-                    <button
-                        onClick={handleSyncFinish}
-                        disabled={syncMutation.isPending}
-                        className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
-                    >
-                        {syncMutation.isPending ? (
-                            <Loader2 className="animate-spin mr-2" size={16} />
-                        ) : (
-                            <RefreshCw className="mr-2" size={16} />
-                        )}
-                        Sync & Finish
-                    </button>
-                </div>
-            </div>
-
-            {sortedRecords.length === 0 ? (
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
-                    <p className="text-gray-500">No records to review. All caught up!</p>
-                </div>
-            ) : (
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                    <div className="px-6 py-4 border-b border-gray-200">
-                        <p className="text-sm text-gray-600">
-                            Showing <span className="font-medium">{sortedRecords.length}</span> records
-                            {hasChanges && <span className="ml-2 text-orange-600">(unsaved changes)</span>}
+        <div>
+            <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h1 className="text-3xl font-bold text-gray-900">Review Dates & Receipts</h1>
+                        <p className="text-gray-600 mt-2">
+                            Verify and correct receipt numbers and dates
                         </p>
                     </div>
-                    <div className="overflow-x-auto">
-                        <table className="w-full">
-                            <thead className="bg-gray-50 border-b border-gray-200">
-                                <tr>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Image Preview</th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Receipt Number</th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Audit Findings</th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Receipt Link</th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-200">
-                                {sortedRecords.map((record, index) => (
-                                    <tr key={index} className="hover:bg-gray-50">
-                                        <td className="px-6 py-4">
-                                            <StatusToggle
-                                                status={record['Verification Status'] || 'Pending'}
-                                                onChange={(newStatus: string) => handleFieldChange(index, 'Verification Status', newStatus)}
-                                            />
-                                        </td>
-                                        <td className="px-4 py-4">
-                                            {record['Receipt Link'] ? (
-                                                record['date_and_receipt_combined_bbox'] ? (
-                                                    <div className="flex flex-col gap-2">
+                    <div className="flex space-x-3">
+                        <button
+                            onClick={() => setShowCompleted(!showCompleted)}
+                            className={`flex items-center px-4 py-2 rounded-lg transition ${showCompleted
+                                ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                }`}
+                        >
+                            {showCompleted ? '✓ Showing Completed' : 'Show Completed'}
+                        </button>
+                        <button
+                            onClick={handleSyncFinish}
+                            disabled={syncMutation.isPending}
+                            className={`flex items-center px-4 py-2 rounded-lg transition disabled:opacity-50 ${statusCounts.completed > 0
+                                ? 'bg-green-600 text-white hover:bg-green-700 animate-pulse'
+                                : 'bg-green-600 text-white hover:bg-green-700'
+                                }`}
+                        >
+                            {syncMutation.isPending ? (
+                                <Loader2 className="animate-spin mr-2" size={16} />
+                            ) : (
+                                <RefreshCw className="mr-2" size={16} />
+                            )}
+                            Sync & Finish
+                            {statusCounts.completed > 0 && (
+                                <span className="ml-2 bg-white text-green-600 rounded-full px-2 py-0.5 text-xs font-semibold">
+                                    {statusCounts.completed}
+                                </span>
+                            )}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Status Summary Bar */}
+                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between flex-wrap gap-4">
+                        <div className="flex gap-6">
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-gray-700">Status Summary:</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-yellow-100 text-yellow-800">
+                                    {statusCounts.pending} Pending
+                                </span>
+                            </div>
+                            {statusCounts.completed > 0 && (
+                                <div className="flex items-center gap-2">
+                                    <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800">
+                                        {statusCounts.completed} Completed
+                                    </span>
+                                </div>
+                            )}
+                            {statusCounts.duplicates > 0 && (
+                                <div className="flex items-center gap-2">
+                                    <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-orange-100 text-orange-800">
+                                        {statusCounts.duplicates} Duplicates
+                                    </span>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+
+                    {/* Progress Bar */}
+                    {records.length > 0 && (
+                        <div className="mt-4">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium text-gray-600">Review Progress</span>
+                                <span className="text-xs font-semibold text-gray-700">
+                                    {Math.round((statusCounts.completed / records.length) * 100)}% Complete
+                                </span>
+                            </div>
+                            <div className="w-full bg-gray-200 rounded-full h-2.5">
+                                <div
+                                    className="bg-gradient-to-r from-green-500 to-green-600 h-2.5 rounded-full transition-all duration-500 ease-out"
+                                    style={{ width: `${(statusCounts.completed / records.length) * 100}%` }}
+                                ></div>
+                            </div>
+                            <div className="flex items-center justify-between mt-1">
+                                <span className="text-xs text-gray-500">
+                                    {statusCounts.completed} of {records.length} completed
+                                </span>
+                                {statusCounts.pending > 0 && (
+                                    <span className="text-xs text-yellow-600">
+                                        {statusCounts.pending} remaining
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                    {/* Sync Action Prompt */}
+                    {statusCounts.completed > 0 && (
+                        <div className="mt-3 pt-3 border-t border-blue-200">
+                            <p className="text-sm text-green-700 flex items-center gap-2">
+                                <span className="text-green-600 font-semibold">✓</span>
+                                You have {statusCounts.completed} completed record{statusCounts.completed !== 1 ? 's' : ''} ready to sync. Click "Sync & Finish" to finalize your changes.
+                            </p>
+                        </div>
+                    )}
+                    {statusCounts.completed === 0 && statusCounts.pending === 0 && (
+                        <div className="mt-3 pt-3 border-t border-blue-200">
+                            <p className="text-sm text-gray-600">
+                                No records to sync. All caught up! 🎉
+                            </p>
+                        </div>
+                    )}
+                </div>
+
+                {sortedRecords.length === 0 ? (
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
+                        <p className="text-gray-500">No records to review. All caught up!</p>
+                    </div>
+                ) : (
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                        <div className="px-6 py-4 border-b border-gray-200">
+                            <p className="text-sm text-gray-600">
+                                Showing <span className="font-medium">{sortedRecords.length}</span> records
+                                {hasChanges && <span className="ml-2 text-orange-600">(unsaved changes)</span>}
+                            </p>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="w-full">
+                                <thead className="bg-gray-50 border-b border-gray-200">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Image Preview</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Receipt Number</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Audit Findings</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Receipt Link</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-200">
+                                    {sortedRecords.map((record, index) => (
+                                        <tr key={index} className="hover:bg-gray-50">
+                                            <td className="px-6 py-4">
+                                                <StatusToggle
+                                                    status={record['Verification Status'] || 'Pending'}
+                                                    onChange={(newStatus: string) => handleFieldChange(index, 'Verification Status', newStatus)}
+                                                />
+                                            </td>
+                                            <td className="px-4 py-4">
+                                                {record['Receipt Link'] ? (
+                                                    record['date_and_receipt_combined_bbox'] ? (
+                                                        <div className="flex flex-col gap-2">
+                                                            <CroppedFieldPreview
+                                                                imageUrl={record['Receipt Link']}
+                                                                bboxes={{
+                                                                    combined: record['date_and_receipt_combined_bbox']
+                                                                }}
+                                                                fields={['combined']}
+                                                                fieldLabels={{
+                                                                    combined: 'Receipt & Date'
+                                                                }}
+                                                            />
+                                                        </div>
+                                                    ) : (
                                                         <CroppedFieldPreview
                                                             imageUrl={record['Receipt Link']}
                                                             bboxes={{
-                                                                combined: record['date_and_receipt_combined_bbox']
+                                                                date: record['date_bbox'],
+                                                                receipt_number: record['receipt_number_bbox']
                                                             }}
-                                                            fields={['combined']}
+                                                            fields={['receipt_number', 'date']}
                                                             fieldLabels={{
-                                                                combined: 'Receipt & Date'
+                                                                receipt_number: 'Receipt #',
+                                                                date: 'Date'
                                                             }}
                                                         />
-                                                    </div>
+                                                    )
                                                 ) : (
-                                                    <CroppedFieldPreview
-                                                        imageUrl={record['Receipt Link']}
-                                                        bboxes={{
-                                                            date: record['date_bbox'],
-                                                            receipt_number: record['receipt_number_bbox']
-                                                        }}
-                                                        fields={['receipt_number', 'date']}
-                                                        fieldLabels={{
-                                                            receipt_number: 'Receipt #',
-                                                            date: 'Date'
-                                                        }}
-                                                    />
-                                                )
-                                            ) : (
-                                                <span className="text-gray-400 text-xs">No image</span>
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <div className="space-y-1">
-                                                <input
-                                                    type="text"
-                                                    value={record['Receipt Number'] || ''}
-                                                    onChange={(e) => handleFieldChange(index, 'Receipt Number', e.target.value)}
-                                                    className={`border rounded px-2 py-1 w-full ${!record['Receipt Number'] || record['Receipt Number'].trim() === ''
-                                                        ? 'border-red-500 bg-red-50'
-                                                        : showSuccessFor[`${records.findIndex(r => r === sortedRecords[index])}-Receipt Number`]
-                                                            ? 'border-green-500 bg-green-50'
-                                                            : 'border-gray-300'
-                                                        }`}
-                                                    placeholder="e.g., 801"
-                                                />
-                                                {(!record['Receipt Number'] || record['Receipt Number'].trim() === '') && (
-                                                    <p className="text-xs text-red-600">
-                                                        🧾 Please add a receipt number
-                                                    </p>
+                                                    <span className="text-gray-400 text-xs">No image</span>
                                                 )}
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <div className="space-y-1">
-                                                <input
-                                                    type="text"
-                                                    value={record['Date'] || ''}
-                                                    onChange={(e) => handleFieldChange(index, 'Date', e.target.value)}
-                                                    className={`border rounded px-2 py-1 w-full ${!record['Date'] || record['Date'].trim() === ''
-                                                        ? 'border-red-500 bg-red-50'
-                                                        : !/^\d{4}-\d{2}-\d{2}$/.test(record['Date'] || '')
-                                                            ? 'border-yellow-500 bg-yellow-50'
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div className="space-y-1">
+                                                    <input
+                                                        type="text"
+                                                        value={record['Receipt Number'] || ''}
+                                                        onChange={(e) => handleFieldChange(index, 'Receipt Number', e.target.value)}
+                                                        className={`border rounded px-2 py-1 w-full ${!record['Receipt Number'] || record['Receipt Number'].trim() === ''
+                                                            ? 'border-red-500 bg-red-50'
+                                                            : showSuccessFor[`${records.findIndex(r => r === sortedRecords[index])}-Receipt Number`]
+                                                                ? 'border-green-500 bg-green-50'
+                                                                : 'border-gray-300'
+                                                            }`}
+                                                        placeholder="e.g., 801"
+                                                    />
+                                                    {(!record['Receipt Number'] || record['Receipt Number'].trim() === '') && (
+                                                        <p className="text-xs text-red-600">
+                                                            🧾 Please add a receipt number
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div className="space-y-1">
+                                                    <input
+                                                        type="date"
+                                                        value={record['Date'] || ''}
+                                                        onChange={(e) => handleFieldChange(index, 'Date', e.target.value)}
+                                                        className={`border rounded px-2 py-1 w-full ${!record['Date'] || record['Date'].trim() === ''
+                                                            ? 'border-red-500 bg-red-50'
                                                             : showSuccessFor[`${records.findIndex(r => r === sortedRecords[index])}-Date`]
                                                                 ? 'border-green-500 bg-green-50'
                                                                 : 'border-gray-300'
-                                                        }`}
-                                                    placeholder="YYYY-MM-DD"
-                                                />
-                                                {(!record['Date'] || record['Date'].trim() === '') && (
-                                                    <p className="text-xs text-red-600">
-                                                        📅 Please add a date (e.g., 2025-12-31)
-                                                    </p>
+                                                            }`}
+                                                    />
+                                                    {(!record['Date'] || record['Date'].trim() === '') && (
+                                                        <p className="text-xs text-red-600">
+                                                            📅 Please select a date
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4 text-sm text-gray-600">
+                                                {record['Audit Findings'] || '—'}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                {record['Receipt Link'] && (
+                                                    <a
+                                                        href={record['Receipt Link']}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="text-blue-600 hover:text-blue-800 text-sm underline"
+                                                    >
+                                                        View
+                                                    </a>
                                                 )}
-                                                {record['Date'] && !/^\d{4}-\d{2}-\d{2}$/.test(record['Date']) && (
-                                                    <p className="text-xs text-yellow-600">
-                                                        ⏳ Keep typing... Date format: YYYY-MM-DD
-                                                    </p>
-                                                )}
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-4 text-sm text-gray-600">
-                                            {record['Audit Findings'] || '—'}
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            {record['Receipt Link'] && (
-                                                <a
-                                                    href={record['Receipt Link']}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="text-blue-600 hover:text-blue-800 text-sm underline"
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <button
+                                                    onClick={() => handleDeleteRow(index)}
+                                                    className="text-red-600 hover:text-red-800 transition"
+                                                    title="Delete row"
                                                 >
-                                                    View
-                                                </a>
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <button
-                                                onClick={() => handleDeleteRow(index)}
-                                                className="text-red-600 hover:text-red-800 transition"
-                                                title="Delete row"
-                                            >
-                                                <Trash2 size={18} />
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                                    <Trash2 size={18} />
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
-                </div>
-            )}
+                )}
+            </div>
+
+            {/* Sync Progress Modal */}
+            <SyncProgressModal
+                isOpen={syncProgress.isOpen}
+                stage={syncProgress.stage}
+                percentage={syncProgress.percentage}
+                message={syncProgress.message}
+            />
         </div>
     );
 };

@@ -1,10 +1,12 @@
 import React, { useState, useCallback } from 'react';
 import { Upload as UploadIcon, X, FileImage, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { uploadAPI } from '../services/api';
 import { useQueryClient } from '@tanstack/react-query';
 import DuplicateWarningModal from '../components/DuplicateWarningModal';
 
 const UploadPage: React.FC = () => {
+    const navigate = useNavigate();
     const [files, setFiles] = useState<File[]>([]);
     const [isDragging, setIsDragging] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
@@ -160,15 +162,9 @@ const UploadPage: React.FC = () => {
                 const status = await uploadAPI.getProcessStatus(taskId);
                 setProcessingStatus(status);
 
-                // DEBUG: Log status for troubleshooting
-                console.log('Processing Status:', status);
-                console.log('Status type:', status.status);
-                console.log('Duplicates:', (status as any).duplicates);
 
                 // Handle duplicate detection - START SEQUENTIAL WORKFLOW
                 if (status.status === 'duplicate_detected' && (status as any).duplicates?.length > 0) {
-                    console.log('🔍 DUPLICATE DETECTED! Starting sequential workflow...');
-                    console.log('Raw duplicates data:', (status as any).duplicates);
                     clearInterval(pollInterval);
                     setIsProcessing(false);
 
@@ -179,7 +175,6 @@ const UploadPage: React.FC = () => {
 
                     // Set first duplicate info - check if it has existing_invoice
                     const firstDup = duplicates[0];
-                    console.log('First duplicate structure:', firstDup);
                     setDuplicateInfo(firstDup);
                     setShowDuplicateModal(true);
                     setFilesToSkip([]);
@@ -222,8 +217,6 @@ const UploadPage: React.FC = () => {
         const currentDup = duplicateQueue[currentDuplicateIndex];
         const updatedForceUpload = [...filesToForceUpload, currentDup.file_key];
         setFilesToForceUpload(updatedForceUpload);
-        console.log('Adding to force upload:', currentDup.file_key);
-        console.log('Updated force upload list:', updatedForceUpload);
         moveToNextDuplicate(filesToSkip, updatedForceUpload);
     };
 
@@ -239,7 +232,6 @@ const UploadPage: React.FC = () => {
             // Modal stays open
         } else {
             // All duplicates handled - close modal and process remaining files
-            console.log('All duplicates handled. Force upload list:', forceUploadList);
             setShowDuplicateModal(false);
             setDuplicateQueue([]);
             setDuplicateInfo(null);
@@ -248,12 +240,10 @@ const UploadPage: React.FC = () => {
         }
     };
 
-    const processRemainingFiles = async (skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload) => {
+    const processRemainingFiles = async (_skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload) => {
         try {
             setIsProcessing(true);
-
-            // CRITICAL FIX: Identify which files were part of the duplicate detection batch
-            const duplicateFileKeys = duplicateQueue.map((d: any) => d.file_key);
+            // Skip list is used for tracking skipped files in finishProcessing
 
             // Files that were never checked for duplicates (truly new, not in the initial batch)
             // NOTE: In current flow, all uploaded files go through duplicate check,
@@ -267,16 +257,9 @@ const UploadPage: React.FC = () => {
             // The safest approach: Only process files explicitly marked for force upload
             // Don't re-process files that weren't duplicates (they were already processed!)
 
-            console.log('Processing remaining files...');
-            console.log('- All uploaded files:', uploadedFiles);
-            console.log('- Duplicate files detected:', duplicateFileKeys);
-            console.log('- Files to force upload (replace):', forceUploadList);
-            console.log('- Files to skip:', skipList);
 
             // Batch 1: Force upload duplicates (user chose to replace)
             if (forceUploadList.length > 0) {
-                console.log('✅ Processing force uploads with', forceUploadList.length, 'files');
-
                 // Clear duplicate status and show processing state
                 setProcessingStatus({
                     task_id: '',
@@ -300,7 +283,6 @@ const UploadPage: React.FC = () => {
                 }, 1000);
             } else {
                 // No files to force upload, just finish
-                console.log('No files to force upload, finishing...');
                 finishProcessing();
             }
         } catch (error) {
@@ -549,9 +531,16 @@ const UploadPage: React.FC = () => {
 
                     {processingStatus.status === 'completed' && (
                         <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
-                            <p className="text-sm font-medium text-green-800">
-                                ✓ Processing complete! Go to Review pages to verify the extracted data.
+                            <p className="text-sm font-medium text-green-800 mb-3">
+                                ✓ Processing complete! Go to Check Pending Sales to verify the extracted data.
                             </p>
+                            <button
+                                onClick={() => navigate('/sales/review')}
+                                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-lg transition flex items-center justify-center gap-2"
+                            >
+                                <CheckCircle size={18} />
+                                Check Pending Sales
+                            </button>
                         </div>
                     )}
                 </div>

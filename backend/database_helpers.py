@@ -58,47 +58,175 @@ def get_all_invoices(username: str, limit: Optional[int] = None, offset: int = 0
     """
     Get all invoices for a user from Supabase.
     
+    IMPORTANT: Supabase has a hard limit of 1000 records per query.
+    This function automatically paginates to fetch ALL records.
+    
     Args:
         username: Username for RLS filtering
-        limit: Maximum number of records to return
-        offset: Number of records to skip
+        limit: Maximum number of records to return (if specified, uses single fetch)
+        offset: Number of records to skip (only used when limit is specified)
     
     Returns:
         List of invoice dictionaries
     """
     try:
         db = get_database_client()
-        query = db.query('invoices').eq('username', username).order('created_at', desc=True)
         
-        if limit:
+        # If a specific limit is requested, use simple pagination
+        if limit is not None:
+            query = db.query('invoices').eq('username', username).order('created_at', desc=True)
             query = query.limit(limit).offset(offset)
+            result = query.execute()
+            return result.data if result.data else []
         
-        result = query.execute()
-        return result.data if result.data else []
+        # Otherwise, fetch ALL records using pagination (for sync operations)
+        all_records = []
+        batch_size = 1000  # Supabase's maximum per request
+        current_offset = 0
+        
+        logger.info(f"Fetching all invoice records for {username} (paginated)")
+        
+        while True:
+            query = db.query('invoices').eq('username', username).order('created_at', desc=True)
+            query = query.limit(batch_size).offset(current_offset)
+            result = query.execute()
+            
+            if not result.data or len(result.data) == 0:
+                break
+            
+            all_records.extend(result.data)
+            logger.info(f"  Fetched batch {current_offset // batch_size + 1}: {len(result.data)} records (total so far: {len(all_records)})")
+            
+            # If we got less than batch_size records, we've reached the end
+            if len(result.data) < batch_size:
+                break
+            
+            current_offset += batch_size
+        
+        logger.info(f"✅ Fetched {len(all_records)} total invoice records for {username}")
+        return all_records
     
     except Exception as e:
         logger.error(f"Error getting invoices for {username}: {e}")
         return []
 
 
-def get_verified_invoices(username: str) -> List[Dict[str, Any]]:
+def get_all_inventory(username: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """
-    Get all verified invoices for a user, sorted by upload_date descending.
+    Get inventory items for a user.
+    
+    IMPORTANT: Supabase has a hard limit of 1000 records per query.
     
     Args:
         username: Username for RLS filtering
+        limit: If specified, return only this many most recent records (single query, fast).
+               If None, fetch ALL records using pagination (slower, but gets everything).
+    
+    Returns:
+        List of inventory item dictionaries
+    """
+    try:
+        db = get_database_client()
+        
+        # If limit is specified and <= 1000, use simple query (fast path)
+        if limit is not None and limit <= 1000:
+            logger.info(f"Fetching {limit} most recent inventory items for {username}")
+            query = db.query('inventory').eq('username', username).order('upload_date', desc=True)
+            query = query.limit(limit)
+            result = query.execute()
+            logger.info(f"✅ Fetched {len(result.data) if result.data else 0} inventory records")
+            return result.data if result.data else []
+        
+        # Otherwise, fetch ALL records using pagination (for searches/filters)
+        all_records = []
+        batch_size = 1000  # Supabase's maximum per request
+        current_offset = 0
+        
+        logger.info(f"Fetching ALL inventory records for {username} (paginated, for filtering)")
+        
+        while True:
+            query = db.query('inventory').eq('username', username).order('upload_date', desc=True)
+            query = query.limit(batch_size).offset(current_offset)
+            result = query.execute()
+            
+            if not result.data or len(result.data) == 0:
+                break
+            
+            all_records.extend(result.data)
+            logger.info(f"  Fetched batch {current_offset // batch_size + 1}: {len(result.data)} records (total so far: {len(all_records)})")
+            
+            # If we got less than batch_size records, we've reached the end
+            if len(result.data) < batch_size:
+                break
+            
+            current_offset += batch_size
+        
+        logger.info(f"✅ Fetched {len(all_records)} total inventory records for {username}")
+        return all_records
+    
+    except Exception as e:
+        logger.error(f"Error getting inventory for {username}: {e}")
+        return []
+
+
+def get_verified_invoices(username: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """
+    Get verified invoices for a user, sorted by upload_date descending.
+    
+    IMPORTANT: Supabase has a hard limit of 1000 records per query.
+    
+    Args:
+        username: Username for RLS filtering
+        limit: If specified, return only this many most recent records (single query, fast).
+               If None, fetch ALL records using pagination (slower, but gets everything).
     
     Returns:
         List of verified invoice dictionaries
     """
     try:
         db = get_database_client()
-        result = db.query('verified_invoices').eq('username', username).order('upload_date', desc=True).execute()
-        return result.data if result.data else []
+        
+        # If limit is specified and <= 1000, use simple query (fast path)
+        if limit is not None and limit <= 1000:
+            logger.info(f"Fetching {limit} most recent verified invoices for {username}")
+            query = db.query('verified_invoices').eq('username', username).order('upload_date', desc=True)
+            query = query.limit(limit)
+            result = query.execute()
+            logger.info(f"✅ Fetched {len(result.data) if result.data else 0} verified invoice records")
+            return result.data if result.data else []
+        
+        # Otherwise, fetch ALL records using pagination (for searches/filters)
+        all_records = []
+        batch_size = 1000  # Supabase's maximum per request
+        current_offset = 0
+        
+        logger.info(f"Fetching ALL verified invoice records for {username} (paginated, for filtering)")
+        
+        while True:
+            query = db.query('verified_invoices').eq('username', username).order('upload_date', desc=True)
+            query = query.limit(batch_size).offset(current_offset)
+            result = query.execute()
+            
+            if not result.data or len(result.data) == 0:
+                break
+            
+            all_records.extend(result.data)
+            logger.info(f"  Fetched batch {current_offset // batch_size + 1}: {len(result.data)} records (total so far: {len(all_records)})")
+            
+            # If we got less than batch_size records, we've reached the end
+            if len(result.data) < batch_size:
+                break
+            
+            current_offset += batch_size
+        
+        logger.info(f"✅ Fetched {len(all_records)} total verified invoice records for {username}")
+        return all_records
     
     except Exception as e:
         logger.error(f"Error getting verified invoices for {username}: {e}")
         return []
+
+
 
 
 def get_verification_dates(username: str) -> List[Dict[str, Any]]:
@@ -155,14 +283,20 @@ def update_verified_invoices(username: str, data: List[Dict[str, Any]]) -> bool:
     try:
         db = get_database_client()
         
-        # FIXED: Use upsert instead of delete-all to preserve existing verified invoices
-        # This ensures data is always appended, never replaced
+        # Prepare records for batch upsert
+        records = []
         for record in data:
             record['username'] = username  # Ensure username is set
+            # CRITICAL: Clean empty date strings (Supabase rejects empty strings for date columns)
+            if 'date' in record and (record['date'] == '' or pd.isna(record['date'])):
+                record['date'] = None
             record = convert_numeric_types(record)
-            db.upsert('verified_invoices', record)
+            records.append(record)
         
-        logger.info(f"✅ Upserted {len(data)} verified invoices for {username} (preserving existing data)")
+        # OPTIMIZED: Use batch upsert with row_id as conflict resolution
+        # This allows updating existing records instead of throwing duplicate key errors
+        count = db.batch_upsert('verified_invoices', records, batch_size=500, on_conflict='row_id')
+        logger.info(f"✅ Upserted {count} verified invoices for {username} (preserving existing data)")
         return True
     
     except Exception as e:
