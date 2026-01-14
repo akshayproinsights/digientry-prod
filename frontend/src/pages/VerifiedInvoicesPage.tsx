@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { verifiedAPI } from '../services/api';
-import { Search, Download, Loader2, ExternalLink, Trash2, Edit, Save, X } from 'lucide-react';
+import { Search, Download, Loader2, ExternalLink, Trash2, Edit, X } from 'lucide-react';
 
 interface VerifiedInvoice {
     row_id?: number;
@@ -43,6 +43,8 @@ const VerifiedInvoicesPage: React.FC = () => {
     const [validationErrors, setValidationErrors] = useState<Record<number, ValidationError[]>>({});
     const [isExporting, setIsExporting] = useState(false);
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+    const [saveStatus, setSaveStatus] = useState<'idle' | 'editing' | 'saving' | 'saved'>('idle');
+    const [errorNotification, setErrorNotification] = useState<string | null>(null);
 
     // Refs for auto-save
     const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -104,6 +106,8 @@ const VerifiedInvoicesPage: React.FC = () => {
     // Individual row update mutation
     const updateRowMutation = useMutation({
         mutationFn: async ({ record }: { record: VerifiedInvoice }) => {
+            setSaveStatus('saving');
+            setErrorNotification(null);
             return verifiedAPI.updateSingleRow(record);
         },
         onSuccess: (_data, variables) => {
@@ -114,16 +118,26 @@ const VerifiedInvoicesPage: React.FC = () => {
             );
             setRecords(updatedRecords);
 
-            // Clear edit state but don't refetch (keeps row in place)
-            setEditingId(null);
-            setEditedItem(null);
-            setValidationErrors({});
-            setHasUnsavedChanges(false);
-            isAutoSavingRef.current = false;
+            // Show saved status
+            setSaveStatus('saved');
+
+            // Clear edit state after a brief delay to show "Saved!" message
+            setTimeout(() => {
+                setEditingId(null);
+                setEditedItem(null);
+                setValidationErrors({});
+                setHasUnsavedChanges(false);
+                setSaveStatus('idle');
+                isAutoSavingRef.current = false;
+            }, 3000);
         },
         onError: (error) => {
             isAutoSavingRef.current = false;
-            alert(`Error updating record: ${error instanceof Error ? error.message : 'Unable to update. Please try again.'}`);
+            setSaveStatus('editing');
+            const errorMsg = error instanceof Error ? error.message : 'Unable to update. Please try again.';
+            setErrorNotification(errorMsg);
+            // Auto-clear error after 5 seconds
+            setTimeout(() => setErrorNotification(null), 5000);
         }
     });
 
@@ -159,6 +173,8 @@ const VerifiedInvoicesPage: React.FC = () => {
         const errors = validationErrors[editingId] || [];
         if (errors.length > 0) {
             // Don't auto-save if there are validation errors
+            setErrorNotification('Please fix validation errors before saving.');
+            setTimeout(() => setErrorNotification(null), 5000);
             return;
         }
 
@@ -169,6 +185,13 @@ const VerifiedInvoicesPage: React.FC = () => {
         if (hasChanges && !isAutoSavingRef.current) {
             isAutoSavingRef.current = true;
             updateRowMutation.mutate({ record: editedItem });
+        } else if (!hasChanges) {
+            // No changes, just exit edit mode
+            setEditingId(null);
+            setEditedItem(null);
+            setValidationErrors({});
+            setHasUnsavedChanges(false);
+            setSaveStatus('idle');
         }
     };
 
@@ -191,6 +214,8 @@ const VerifiedInvoicesPage: React.FC = () => {
         setEditedItem({ ...record });
         setValidationErrors(prev => ({ ...prev, [index]: [] }));
         setHasUnsavedChanges(false);
+        setSaveStatus('editing');
+        setErrorNotification(null);
         clearAutoSaveTimer();
     };
 
@@ -201,6 +226,8 @@ const VerifiedInvoicesPage: React.FC = () => {
         setEditedItem(null);
         setValidationErrors({});
         setHasUnsavedChanges(false);
+        setSaveStatus('idle');
+        setErrorNotification(null);
     };
 
     // Handle field change with debounced auto-save
@@ -223,21 +250,18 @@ const VerifiedInvoicesPage: React.FC = () => {
 
         setEditedItem({ ...editedItem, [field]: value });
         setHasUnsavedChanges(true);
+        setSaveStatus('editing');
 
         // Clear existing timer
         clearAutoSaveTimer();
 
-        // Set new timer for debounced auto-save (2 seconds)
+        // Set new timer for debounced auto-save (10 seconds) - gives user time to finish typing
         autoSaveTimerRef.current = setTimeout(() => {
             performAutoSave();
-        }, 2000);
+        }, 10000);
     };
 
-    // Handle save (manual save button)
-    const handleSave = () => {
-        clearAutoSaveTimer();
-        performAutoSave();
-    };
+    // Manual save removed - using auto-save only
 
     // Handle clicking away from a row (blur) - auto-save immediately
     // Row stays in place since we don't refetch data until filters/navigation change
@@ -420,6 +444,16 @@ const VerifiedInvoicesPage: React.FC = () => {
                 </div>
             ) : (
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    {/* Error Notification */}
+                    {errorNotification && (
+                        <div className="mx-6 mt-6 bg-red-50 border border-red-300 text-red-800 px-4 py-3 rounded-lg flex items-start gap-3">
+                            <span className="text-red-600 font-bold text-lg">⚠</span>
+                            <div className="flex-1">
+                                <p className="font-medium">Error</p>
+                                <p className="text-sm">{errorNotification}</p>
+                            </div>
+                        </div>
+                    )}
                     <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                         <p className="text-sm text-gray-600">
                             Showing <span className="font-medium">{records.length}</span> verified records
@@ -465,17 +499,29 @@ const VerifiedInvoicesPage: React.FC = () => {
                                             {/* Actions */}
                                             <td className="px-4 py-3">
                                                 {isEditing ? (
-                                                    <div className="flex gap-2">
-                                                        <button
-                                                            onClick={handleSave}
-                                                            className="text-green-600 hover:text-green-800 transition"
-                                                            title="Save"
-                                                        >
-                                                            <Save size={18} />
-                                                        </button>
+                                                    <div className="flex items-center gap-2">
+                                                        {/* Status Badge */}
+                                                        {saveStatus === 'editing' && (
+                                                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                                                                ✏️ Editing
+                                                            </span>
+                                                        )}
+                                                        {saveStatus === 'saving' && (
+                                                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                                                <Loader2 className="animate-spin" size={12} />
+                                                                Saving...
+                                                            </span>
+                                                        )}
+                                                        {saveStatus === 'saved' && (
+                                                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                                                ✓ Saved!
+                                                            </span>
+                                                        )}
+                                                        {/* Cancel Button */}
                                                         <button
                                                             onClick={handleCancelEdit}
-                                                            className="text-red-600 hover:text-red-800 transition"
+                                                            disabled={saveStatus === 'saving'}
+                                                            className="text-red-600 hover:text-red-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                                             title="Cancel"
                                                         >
                                                             <X size={18} />
@@ -499,7 +545,8 @@ const VerifiedInvoicesPage: React.FC = () => {
                                                         type="text"
                                                         value={currentItem['Receipt Number'] || ''}
                                                         onChange={(e) => handleFieldChange('Receipt Number', e.target.value)}
-                                                        className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{record['Receipt Number'] || '—'}</span>
@@ -513,7 +560,8 @@ const VerifiedInvoicesPage: React.FC = () => {
                                                         type="text"
                                                         value={currentItem['Date'] || ''}
                                                         onChange={(e) => handleFieldChange('Date', e.target.value)}
-                                                        className="w-28 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-28 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                         placeholder="DD-MMM-YYYY"
                                                     />
                                                 ) : (
@@ -528,7 +576,8 @@ const VerifiedInvoicesPage: React.FC = () => {
                                                         type="text"
                                                         value={currentItem['Customer Name'] || ''}
                                                         onChange={(e) => handleFieldChange('Customer Name', e.target.value)}
-                                                        className="w-32 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-32 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{record['Customer Name'] || '—'}</span>
@@ -542,7 +591,8 @@ const VerifiedInvoicesPage: React.FC = () => {
                                                         type="text"
                                                         value={currentItem['Car Number'] || currentItem['Vehicle Number'] || ''}
                                                         onChange={(e) => handleFieldChange('Car Number', e.target.value)}
-                                                        className="w-28 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-28 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{record['Car Number'] || record['Vehicle Number'] || '—'}</span>
@@ -556,7 +606,8 @@ const VerifiedInvoicesPage: React.FC = () => {
                                                         type="text"
                                                         value={currentItem['Description'] || ''}
                                                         onChange={(e) => handleFieldChange('Description', e.target.value)}
-                                                        className="w-40 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-40 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900 max-w-xs truncate block" title={record['Description']}>
@@ -572,7 +623,8 @@ const VerifiedInvoicesPage: React.FC = () => {
                                                         type="text"
                                                         value={currentItem['Type'] || ''}
                                                         onChange={(e) => handleFieldChange('Type', e.target.value)}
-                                                        className="w-24 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-24 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                         placeholder="Type"
                                                     />
                                                 ) : (
@@ -589,7 +641,8 @@ const VerifiedInvoicesPage: React.FC = () => {
                                                             step="0.1"
                                                             value={currentItem['Quantity'] || ''}
                                                             onChange={(e) => handleFieldChange('Quantity', e.target.value)}
-                                                            className={`w-16 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 ${getFieldError(index, 'Quantity') ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                                                            disabled={saveStatus === 'saving'}
+                                                            className={`w-16 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed ${getFieldError(index, 'Quantity') ? 'border-red-500 bg-red-50' : 'border-gray-300'
                                                                 }`}
                                                         />
                                                         {getFieldError(index, 'Quantity') && (
@@ -610,7 +663,8 @@ const VerifiedInvoicesPage: React.FC = () => {
                                                             step="0.01"
                                                             value={currentItem['Rate'] || ''}
                                                             onChange={(e) => handleFieldChange('Rate', e.target.value)}
-                                                            className={`w-20 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 ${getFieldError(index, 'Rate') ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                                                            disabled={saveStatus === 'saving'}
+                                                            className={`w-20 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed ${getFieldError(index, 'Rate') ? 'border-red-500 bg-red-50' : 'border-gray-300'
                                                                 }`}
                                                         />
                                                         {getFieldError(index, 'Rate') && (
@@ -631,7 +685,8 @@ const VerifiedInvoicesPage: React.FC = () => {
                                                             step="0.01"
                                                             value={currentItem['Amount'] || ''}
                                                             onChange={(e) => handleFieldChange('Amount', e.target.value)}
-                                                            className={`w-24 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 ${getFieldError(index, 'Amount') ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                                                            disabled={saveStatus === 'saving'}
+                                                            className={`w-24 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed ${getFieldError(index, 'Amount') ? 'border-red-500 bg-red-50' : 'border-gray-300'
                                                                 }`}
                                                         />
                                                         {getFieldError(index, 'Amount') && (
