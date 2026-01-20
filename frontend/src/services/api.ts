@@ -56,7 +56,7 @@ export const uploadAPI = {
     },
 
     processInvoices: async (fileKeys: string[], forceUpload: boolean = false) => {
-        const response = await apiClient.post('/api/upload/process', {
+        const response = await apiClient.post('/api/upload/process-files', {
             file_keys: fileKeys,
             force_upload: forceUpload,
         });
@@ -240,6 +240,13 @@ export const verifiedAPI = {
         // Transform Title Case to snake_case for backend
         const transformedRecord = mapArrayToBackend([record])[0];
         const response = await apiClient.put('/api/verified/update', transformedRecord);
+        return response.data;
+    },
+
+    deleteBulk: async (rowIds: number[]) => {
+        const response = await apiClient.post('/api/verified/delete-bulk', {
+            row_ids: rowIds
+        });
         return response.data;
     },
 

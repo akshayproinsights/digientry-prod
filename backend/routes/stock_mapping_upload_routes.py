@@ -18,6 +18,7 @@ from models.mapping_models import (
     VendorMappingSheet
 )
 from config_loader import load_user_config
+from config import get_mappings_folder
 import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ async def upload_mapping_sheet(
 ):
     """
     Upload vendor mapping sheet PDF
-    - Uploads to R2: adnak-sir-invoices/Adnak/adnak_vendor_mapping/
+    - Uploads to R2: {username}/mappings/
     - Triggers Gemini extraction
     - Stores results in vendor_mapping_sheets table
     """
@@ -65,14 +66,17 @@ async def upload_mapping_sheet(
                     message="This mapping sheet has already been processed"
                 )
         
-        # 3. Upload to R2
+        # 3. Upload to R2 using dynamic path
         storage = get_storage_client()
+        user_config = load_user_config(username)
+        bucket = user_config.get("r2_bucket")
+        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         extension = file.filename.split(".")[-1] if "." in file.filename else "pdf"
         filename = f"{timestamp}_{file_hash[:8]}.{extension}"
         
-        bucket = "adnak-sir-invoices"
-        key = f"Adnak/adnak_vendor_mapping/{username}/{filename}"
+        mappings_folder = get_mappings_folder(username)
+        key = f"{mappings_folder}{filename}"
         
         success = storage.upload_file(
             file_data=content,

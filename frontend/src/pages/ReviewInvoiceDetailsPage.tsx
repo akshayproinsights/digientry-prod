@@ -248,16 +248,15 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
     });
 
     const deleteMutation = useMutation({
-        mutationFn: (rowId: string) => {
-            return fetch(`${import.meta.env.VITE_API_URL}/api/review/record/${rowId}`, {
-                method: 'DELETE',
-                headers: {
-                    'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
-                },
-            }).then(res => res.json());
+        mutationFn: async (receiptNumber: string) => {
+            return reviewAPI.deleteReceipt(receiptNumber);
         },
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['review-invoice-details'] });
+        onSuccess: async () => {
+            // CRITICAL: Force immediate refetch instead of just invalidating
+            // Note: We don't refetch 'verified' because deleteReceipt doesn't touch verified_invoices
+            await queryClient.refetchQueries({ queryKey: ['review-invoice-details'] });
+            await queryClient.refetchQueries({ queryKey: ['review-dates'] });
+            await queryClient.refetchQueries({ queryKey: ['review-amounts'] });
         },
     });
 
@@ -472,11 +471,13 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                             <div className="flex items-center gap-2">
                                 <span className="text-sm font-medium text-gray-700">Status Summary:</span>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-yellow-100 text-yellow-800">
-                                    {statusCounts.pending} Pending
-                                </span>
-                            </div>
+                            {statusCounts.pending > 0 && (
+                                <div className="flex items-center gap-2">
+                                    <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-yellow-100 text-yellow-800">
+                                        {statusCounts.pending} Pending
+                                    </span>
+                                </div>
+                            )}
                             {statusCounts.completed > 0 && (
                                 <div className="flex items-center gap-2">
                                     <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800">
@@ -492,6 +493,11 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                 </div>
                             )}
                         </div>
+                        {statusCounts.pending === 0 && statusCounts.completed === 0 && statusCounts.duplicates === 0 && (
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm text-gray-600">All caught up! 🎉</span>
+                            </div>
+                        )}
                     </div>
 
                     {/* Progress Bar */}
@@ -567,15 +573,15 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                                 });
                                                             }}
                                                         />
-                                                        {headerRecord['Row_Id'] && (
+                                                        {headerRecord['Receipt Number'] && (
                                                             <button
                                                                 onClick={() => {
-                                                                    if (window.confirm('Are you sure you want to delete this record? This action cannot be undone.')) {
-                                                                        deleteMutation.mutate(headerRecord['Row_Id']);
+                                                                    if (window.confirm(`Are you sure you want to delete Receipt #${headerRecord['Receipt Number']}? This will remove ALL records for this receipt from the entire system.`)) {
+                                                                        deleteMutation.mutate(headerRecord['Receipt Number']);
                                                                     }
                                                                 }}
                                                                 className="px-3 py-2 text-red-600 hover:text-red-800 hover:bg-red-50 rounded border border-red-300 transition-colors"
-                                                                title="Delete record"
+                                                                title="Delete entire receipt"
                                                             >
                                                                 <Trash2 size={16} />
                                                             </button>
@@ -747,36 +753,21 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                             {receiptNum}
                                                         </td>
                                                         <td className="px-2 py-3">
-                                                            <div className="flex gap-1 text-xs scale-90 origin-left">
-                                                                <StatusToggle
-                                                                    status={record['Verification Status'] || 'Pending'}
-                                                                    onChange={(newStatus: string) => {
-                                                                        // Update local state
-                                                                        const updated = [...records];
-                                                                        updated[globalIdx] = { ...updated[globalIdx], 'Verification Status': newStatus };
-                                                                        setRecords(updated);
-                                                                        // CRITICAL FIX: Save immediately to database
-                                                                        updateAmountMutation.mutate({ record: updated[globalIdx] }, {
-                                                                            onSuccess: () => {
-                                                                                queryClient.invalidateQueries({ queryKey: ['review-invoice-details'] });
-                                                                            }
-                                                                        });
-                                                                    }}
-                                                                />
-                                                                {record['Row_Id'] && (
-                                                                    <button
-                                                                        onClick={() => {
-                                                                            if (window.confirm('Are you sure you want to delete this record? This action cannot be undone.')) {
-                                                                                deleteMutation.mutate(record['Row_Id']);
-                                                                            }
-                                                                        }}
-                                                                        className="px-1.5 py-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded border border-red-300 transition-colors"
-                                                                        title="Delete record"
-                                                                    >
-                                                                        <Trash2 size={14} />
-                                                                    </button>
-                                                                )}
-                                                            </div>
+                                                            <StatusToggle
+                                                                status={record['Verification Status'] || 'Pending'}
+                                                                onChange={(newStatus: string) => {
+                                                                    // Update local state
+                                                                    const updated = [...records];
+                                                                    updated[globalIdx] = { ...updated[globalIdx], 'Verification Status': newStatus };
+                                                                    setRecords(updated);
+                                                                    // CRITICAL FIX: Save immediately to database
+                                                                    updateAmountMutation.mutate({ record: updated[globalIdx] }, {
+                                                                        onSuccess: () => {
+                                                                            queryClient.invalidateQueries({ queryKey: ['review-invoice-details'] });
+                                                                        }
+                                                                    });
+                                                                }}
+                                                            />
                                                         </td>
                                                         <td className="px-4 py-3">
                                                             {record['Receipt Link'] && record['line_item_row_bbox'] ? (

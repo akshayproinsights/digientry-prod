@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { verifiedAPI } from '../services/api';
-import { Search, Download, Loader2, ExternalLink, Trash2, Edit, X } from 'lucide-react';
+import { Search, Download, Loader2, ExternalLink, Trash2, Edit, X, CheckSquare, Square } from 'lucide-react';
 
 interface VerifiedInvoice {
     row_id?: number;
@@ -46,6 +46,10 @@ const VerifiedInvoicesPage: React.FC = () => {
     const [saveStatus, setSaveStatus] = useState<'idle' | 'editing' | 'saving' | 'saved'>('idle');
     const [errorNotification, setErrorNotification] = useState<string | null>(null);
 
+    // Selection states
+    const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+    const [isSelectAllChecked, setIsSelectAllChecked] = useState(false);
+
     // Refs for auto-save
     const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const isAutoSavingRef = useRef(false);
@@ -68,6 +72,9 @@ const VerifiedInvoicesPage: React.FC = () => {
                 description: descriptionFilter || undefined,
             });
             setRecords(data.records || []);
+            // Clear selections when data changes due to filters
+            setSelectedIds(new Set());
+            setIsSelectAllChecked(false);
             return data;
         },
     });
@@ -152,6 +159,21 @@ const VerifiedInvoicesPage: React.FC = () => {
         },
         onError: (error) => {
             alert(`Error deleting row: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    });
+
+    // Bulk delete mutation
+    const bulkDeleteMutation = useMutation({
+        mutationFn: async (rowIds: number[]) => {
+            return verifiedAPI.deleteBulk(rowIds);
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['verified'] });
+            setSelectedIds(new Set());
+            setIsSelectAllChecked(false);
+        },
+        onError: (error) => {
+            alert(`Error deleting records: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     });
 
@@ -307,6 +329,43 @@ const VerifiedInvoicesPage: React.FC = () => {
         }
     };
 
+    const handleSelectRow = (rowId: number | undefined) => {
+        if (rowId === undefined) return;
+
+        const newSelected = new Set(selectedIds);
+        if (newSelected.has(rowId)) {
+            newSelected.delete(rowId);
+        } else {
+            newSelected.add(rowId);
+        }
+        setSelectedIds(newSelected);
+
+        // Update select all checkbox state
+        setIsSelectAllChecked(newSelected.size === records.length && records.length > 0);
+    };
+
+    const handleSelectAll = () => {
+        if (isSelectAllChecked) {
+            // Deselect all
+            setSelectedIds(new Set());
+            setIsSelectAllChecked(false);
+        } else {
+            // Select all visible records
+            const allIds = new Set(records.map(r => r.row_id).filter((id): id is number => id !== undefined));
+            setSelectedIds(allIds);
+            setIsSelectAllChecked(true);
+        }
+    };
+
+    const handleBulkDelete = async () => {
+        if (selectedIds.size === 0) return;
+
+        const count = selectedIds.size;
+        if (confirm(`Are you sure you want to delete ${count} selected record${count > 1 ? 's' : ''}?`)) {
+            bulkDeleteMutation.mutate(Array.from(selectedIds));
+        }
+    };
+
     const getFieldError = (index: number, field: string): string | null => {
         const errors = validationErrors[index] || [];
         const error = errors.find(e => e.field === field);
@@ -458,11 +517,34 @@ const VerifiedInvoicesPage: React.FC = () => {
                         <p className="text-sm text-gray-600">
                             Showing <span className="font-medium">{records.length}</span> verified records
                         </p>
+                        {selectedIds.size > 0 && (
+                            <button
+                                onClick={handleBulkDelete}
+                                disabled={bulkDeleteMutation.isPending}
+                                className="flex items-center px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50"
+                            >
+                                <Trash2 className="mr-2" size={16} />
+                                {bulkDeleteMutation.isPending ? 'Deleting...' : `Delete Selected (${selectedIds.size})`}
+                            </button>
+                        )}
                     </div>
                     <div className="overflow-x-auto">
                         <table className="w-full">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
+                                    <th className="px-4 py-3 text-left">
+                                        <button
+                                            type="button"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleSelectAll();
+                                            }}
+                                            className="text-gray-600 hover:text-gray-900 transition cursor-pointer"
+                                            title={isSelectAllChecked ? "Deselect All" : "Select All"}
+                                        >
+                                            {isSelectAllChecked ? <CheckSquare size={20} /> : <Square size={20} />}
+                                        </button>
+                                    </th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Receipt #</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
@@ -496,6 +578,23 @@ const VerifiedInvoicesPage: React.FC = () => {
                                                 }
                                             }}
                                         >
+                                            {/* Checkbox */}
+                                            <td className="px-4 py-3">
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleSelectRow(record.row_id);
+                                                    }}
+                                                    className="text-gray-600 hover:text-gray-900 transition cursor-pointer"
+                                                >
+                                                    {selectedIds.has(record.row_id || -1) ?
+                                                        <CheckSquare size={18} /> :
+                                                        <Square size={18} />
+                                                    }
+                                                </button>
+                                            </td>
+
                                             {/* Actions */}
                                             <td className="px-4 py-3">
                                                 {isEditing ? (

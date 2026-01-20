@@ -16,7 +16,7 @@ import json
 from database import get_database_client
 from auth import get_current_user
 from services.storage import get_storage_client
-from config import get_google_api_key
+from config import get_google_api_key, get_mappings_folder
 from config_loader import get_user_config
 
 logger = logging.getLogger(__name__)
@@ -195,10 +195,12 @@ async def upload_scan(
         extension = file.filename.split(".")[-1] if "." in file.filename else "jpg"
         filename = f"{timestamp}_{file_hash}.{extension}"
         
-        # Upload to R2
+        # Upload to R2 using dynamic path
         storage = get_storage_client()
-        bucket = "adnak-sir-invoices"
-        key = f"Adnak/adnak_vendor_mapping/{filename}"
+        user_config = get_user_config(username)
+        bucket = user_config.get("r2_bucket")
+        mappings_folder = get_mappings_folder(username)
+        key = f"{mappings_folder}{filename}"
         
         success = storage.upload_file(
             file_data=content,
@@ -258,14 +260,18 @@ async def extract_from_image(
         
         # Download image from R2 if needed, or use URL directly
         storage = get_storage_client()
+        user_config = get_user_config(username)
+        bucket = user_config.get("r2_bucket")
         
         # Extract key from URL
-        # URL format: https://pub-xxx.r2.dev/bucket/key
-        if "adnak_vendor_mapping" in image_url:
-            parts = image_url.split("adnak-sir-invoices/")
+        # URL format: https://pub-xxx.r2.dev/bucket/key OR https://pub-xxx.r2.dev/key
+        # Check if URL contains mappings folder pattern
+        if "/mappings/" in image_url or "adnak_vendor_mapping" in image_url:
+            # Try to extract key by splitting on bucket name
+            parts = image_url.split(f"{bucket}/")
             if len(parts) > 1:
                 key = parts[1]
-                image_bytes = storage.download_file("adnak-sir-invoices", key)
+                image_bytes = storage.download_file(bucket, key)
             else:
                 # Try to fetch directly
                 import httpx

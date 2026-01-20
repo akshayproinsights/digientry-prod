@@ -258,8 +258,16 @@ async def delete_receipt(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    Delete all records with given receipt number from ALL Supabase tables.
+    Delete all records with given receipt number from review and staging tables.
     Used when deleting from Review Dates tab (deletes entire receipt).
+    
+    IMPORTANT: Does NOT delete from verified_invoices - only deletes from:
+    - invoices (staging table)
+    - verification_dates (review table)
+    - verification_amounts (review table)
+    
+    This prevents accidentally deleting already-synced historical records if a duplicate
+    receipt number is uploaded and then deleted during review.
     """
     username = current_user.get("username")
     
@@ -269,12 +277,12 @@ async def delete_receipt(
     try:
         db = get_database_client()
         
-        # List of all tables to clean
+        # List of tables to clean - EXCLUDING verified_invoices
+        # verified_invoices should only be modified during Sync & Finish
         tables_to_clean = [
-            'invoices',
-            'verified_invoices',
-            'verification_dates',
-            'verification_amounts'
+            'invoices',              # Staging table for unverified invoices
+            'verification_dates',    # Review table for dates/receipts
+            'verification_amounts'   # Review table for line items
         ]
         
         total_deleted = 0
@@ -295,7 +303,7 @@ async def delete_receipt(
         
         return {
             "success": True,
-            "message": f"Receipt {receipt_number} deleted from all tables",
+            "message": f"Receipt {receipt_number} deleted from review and staging tables",
             "records_deleted": total_deleted
         }
         

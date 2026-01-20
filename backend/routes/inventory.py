@@ -14,7 +14,7 @@ import pandas as pd
 from auth import get_current_user, get_current_user_r2_bucket
 from services.storage import get_storage_client
 from utils.image_optimizer import optimize_image_for_gemini, should_optimize_image, validate_image_quality
-from config import get_inventory_r2_folder
+from config import get_purchases_folder
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -36,6 +36,7 @@ class InventoryUploadResponse(BaseModel):
 class InventoryProcessRequest(BaseModel):
     """Process inventory request model"""
     file_keys: List[str]
+    force_upload: bool = False  # If True, bypass duplicate checking and delete old duplicates
 
 
 class InventoryProcessResponse(BaseModel):
@@ -60,66 +61,56 @@ async def upload_inventory_files(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    Upload inventory/vendor invoice files to R2 storage (vendor_invoices folder)
+    Accept inventory files and save temporarily on server.
+    R2 upload will happen in background when processing starts.
     """
-    uploaded_files = []
+    import tempfile
+    import os
+    
+    temp_files = []
     username = current_user.get("username", "user")
     
-    # DEBUG: Log user config
-    logger.info(f"Current user: {username}")
-    logger.info(f"User config keys: {list(current_user.keys())}")
-    logger.info(f"R2 bucket from config: {current_user.get('r2_bucket')}")
-    
-    # Get r2_bucket from user config
-    r2_bucket = current_user.get("r2_bucket")
-    if not r2_bucket:
-        logger.error(f"No r2_bucket found for user {username}. User config: {current_user}")
-        raise HTTPException(status_code=400, detail="No r2_bucket configured for user")
-    
-    # Get inventory-specific folder path
-    inventory_folder = get_inventory_r2_folder(username)
-    
-    # Process files in parallel
-    CONCURRENCY_LIMIT = 20
-    semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
-    
-    async def process_single_file(file: UploadFile):
-        async with semaphore:
+    try:
+        # Create temp directory for this batch
+        temp_dir = tempfile.mkdtemp(prefix=f"inventory_{username}_")
+        logger.info(f"Created temp directory: {temp_dir}")
+        
+        for file in files:
             try:
+                # Read file content
                 content = await file.read()
                 
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    executor,
-                    upload_single_inventory_file_sync,
-                    content,
-                    file.filename,
-                    username,
-                    r2_bucket,
-                    inventory_folder
-                )
+                # Save to temp file
+                temp_path = os.path.join(temp_dir, file.filename)
+                with open(temp_path, 'wb') as f:
+                    f.write(content)
                 
-                if result:
-                    return result
-                return None
+                temp_files.append({
+                    "temp_path": temp_path,
+                    "original_filename": file.filename,
+                    "size": len(content)
+                })
+                
+                logger.info(f"Saved temp file: {file.filename} ({len(content)} bytes)")
+                
             except Exception as e:
-                logger.error(f"Error processing {file.filename}: {e}")
-                return None
-
-    total_files = len(files)
-    logger.info(f"Starting inventory upload of {total_files} files to {inventory_folder}")
-    tasks = [process_single_file(file) for file in files]
-    
-    results = await asyncio.gather(*tasks)
-    uploaded_files = [res for res in results if res]
-    
-    logger.info(f"Inventory upload complete: {len(uploaded_files)}/{total_files} files uploaded")
-    
-    return {
-        "success": True,
-        "uploaded_files": uploaded_files,
-        "message": f"Successfully uploaded {len(uploaded_files)} of {len(files)} file(s) to vendor_invoices"
-    }
+                logger.error(f"Error saving {file.filename}: {e}")
+                continue
+        
+        logger.info(f"Saved {len(temp_files)}/{len(files)} files to temp storage")
+        
+        # Return temp file references
+        temp_refs = [tf["temp_path"] for tf in temp_files]
+        
+        return {
+            "success": True,
+            "uploaded_files": temp_refs,
+            "message": f"Received {len(temp_files)} of {len(files)} file(s), processing in background"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in upload_inventory_files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def upload_single_inventory_file_sync(
@@ -219,7 +210,8 @@ async def process_inventory(
         task_id,
         request.file_keys,
         r2_bucket,
-        current_user.get("username", "user")
+        current_user.get("username", "user"),
+        request.force_upload  # Pass force_upload parameter
     )
     
     return {
@@ -253,24 +245,85 @@ async def get_inventory_process_status(
 
 def process_inventory_sync(
     task_id: str,
-    file_keys: List[str],
+    file_keys: List[str],  # These are temp paths now
     r2_bucket: str,
-    username: str
+    username: str,
+    force_upload: bool = False
 ):
     """
-    Synchronous background task to process inventory items
+    Synchronous background task to process inventory
+    1. Upload temp files to R2
+    2. Process with Gemini
+    3. Clean up temp files
     """
+    import os
+    import shutil
+    
     logger.info(f"=== INVENTORY PROCESSING STARTED ===")
     logger.info(f"Task ID: {task_id}")
-    logger.info(f"Files: {file_keys}")
+    logger.info(f"Temp files: {file_keys}")
     logger.info(f"User: {username}")
     
+    r2_file_keys = []
+    inventory_folder = get_purchases_folder(username)
+    
     try:
+        # Check if files are R2 keys (already uploaded) or temp paths  
+        # R2 keys look like "Adnak/purchases/xxx.jpg"
+        # Temp paths look like "C:\Users\...\temp_xxx\file.jpg"
+        first_file = file_keys[0] if file_keys else ""
+        files_already_in_r2 = force_upload or ("/" in first_file and not os.path.exists(first_file))
+        
+        if files_already_in_r2:
+            # Files are already in R2 (duplicate replacement flow)
+            logger.info("Files already in R2 - skipping upload phase")
+            r2_file_keys = file_keys  # These are R2 keys, not temp paths
+            inventory_processing_status[task_id]["status"] = "processing"
+            inventory_processing_status[task_id]["message"] = "Processing inventory items..."
+            inventory_processing_status[task_id]["start_time"] = datetime.now().isoformat()
+        else:
+            # Phase 1: Upload temp files to R2 (new upload flow)
+            logger.info("Phase 1: Uploading files to R2...")
+            inventory_processing_status[task_id]["status"] = "uploading"
+            inventory_processing_status[task_id]["message"] = "Uploading files to cloud storage..."
+            inventory_processing_status[task_id]["start_time"] = datetime.now().isoformat()
+            
+            for idx, temp_path in enumerate(file_keys):
+                try:
+                    with open(temp_path, 'rb') as f:
+                        content = f.read()
+                    
+                    filename = os.path.basename(temp_path)
+                    
+                    # Upload to R2 using existing function
+                    r2_key = upload_single_inventory_file_sync(
+                        content=content,
+                        filename=filename,
+                        username=username,
+                        r2_bucket=r2_bucket,
+                        inventory_folder=inventory_folder
+                    )
+                    
+                    if r2_key:
+                        r2_file_keys.append(r2_key)
+                        logger.info(f"Uploaded {idx+1}/{len(file_keys)}: {r2_key}")
+                    
+                    inventory_processing_status[task_id]["message"] = f"Uploading to cloud: {idx+1}/{len(file_keys)}"
+                    inventory_processing_status[task_id]["progress"]["processed"] = idx
+                    
+                except Exception as e:
+                    logger.error(f"Error uploading {temp_path}: {e}")
+                    continue
+            
+            logger.info(f"R2 upload complete: {len(r2_file_keys)}/{len(file_keys)} files")
+        
+        # Phase 2: Process inventory
+        logger.info("Phase 2: Processing inventory with AI...")
         inventory_processing_status[task_id]["status"] = "processing"
         inventory_processing_status[task_id]["message"] = "Processing inventory items..."
-        inventory_processing_status[task_id]["start_time"] = datetime.now().isoformat()
+        inventory_processing_status[task_id]["progress"]["total"] = len(r2_file_keys)
+        inventory_processing_status[task_id]["progress"]["processed"] = 0
         
-        # Progress callback
         def update_progress(current_index: int, total: int, current_file: str):
             inventory_processing_status[task_id]["progress"]["processed"] = current_index
             inventory_processing_status[task_id]["current_file"] = current_file
@@ -278,30 +331,25 @@ def process_inventory_sync(
             inventory_processing_status[task_id]["message"] = f"Processing: {current_file}"
             logger.info(f"Progress: {current_index}/{total} - {current_file}")
         
-        # Import the inventory processor
         from services.inventory_processor import process_inventory_batch
         
-        logger.info(f"Processing {len(file_keys)} inventory files for user {username}")
-        # Call the actual processor with progress callback
-        logger.info("Calling process_inventory_batch")
         results = process_inventory_batch(
-            file_keys=file_keys,
+            file_keys=r2_file_keys,
             r2_bucket=r2_bucket,
             username=username,
-            progress_callback=update_progress
+            progress_callback=update_progress,
+            force_upload=force_upload
         )
         
         logger.info(f"Processing completed. Results: {results}")
         
         # Check for duplicates
         if results.get("duplicates"):
-            # Duplicates detected - update status accordingly
             inventory_processing_status[task_id]["status"] = "duplicate_detected"
             inventory_processing_status[task_id]["duplicates"] = results["duplicates"]
             inventory_processing_status[task_id]["message"] = f"Duplicate vendor invoices detected: {len(results['duplicates'])} file(s)"
             logger.info(f"Duplicates detected: {len(results['duplicates'])}")
         else:
-            # Update status based on results
             inventory_processing_status[task_id]["status"] = "completed"
             inventory_processing_status[task_id]["progress"]["processed"] = results["processed"]
             inventory_processing_status[task_id]["progress"]["failed"] = results["failed"]
@@ -315,8 +363,6 @@ def process_inventory_sync(
             inventory_processing_status[task_id]["errors"] = results["errors"]
             logger.warning(f"Processing errors: {results['errors']}")
         
-        logger.info("=== INVENTORY PROCESSING COMPLETED ===")
-        
     except Exception as e:
         logger.error(f"=== INVENTORY PROCESSING FAILED ===")
         logger.error(f"Error processing inventory: {e}")
@@ -325,6 +371,19 @@ def process_inventory_sync(
         inventory_processing_status[task_id]["status"] = "failed"
         inventory_processing_status[task_id]["message"] = f"Processing failed: {str(e)}"
         inventory_processing_status[task_id]["end_time"] = datetime.now().isoformat()
+    
+    finally:
+        # Phase 3: Cleanup temp files
+        try:
+            if file_keys:
+                temp_dir = os.path.dirname(file_keys[0])
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                    logger.info(f"Cleaned up temp directory: {temp_dir}")
+        except Exception as e:
+            logger.error(f"Error cleaning up temp files: {e}")
+        
+        logger.info("=== INVENTORY PROCESSING COMPLETED ===")
 
 
 @router.get("/items")

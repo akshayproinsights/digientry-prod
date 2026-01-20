@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Upload as UploadIcon, X, Loader2, CheckCircle, XCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { uploadAPI } from '../services/api';
@@ -13,6 +13,7 @@ const UploadPage: React.FC = () => {
     const [uploadProgress, setUploadProgress] = useState(0);
     const [isProcessing, setIsProcessing] = useState(false);
     const [processingStatus, setProcessingStatus] = useState<any>(null);
+    const [pollingInterval, setPollingInterval] = useState<number | null>(null);
 
     // Upload tracking for bulk uploads
     const [uploadedCount, setUploadedCount] = useState(0);
@@ -29,6 +30,112 @@ const UploadPage: React.FC = () => {
     const [filesToForceUpload, setFilesToForceUpload] = useState<string[]>([]);
     const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
     const queryClient = useQueryClient();
+
+    // Resume monitoring on page load if there's an active task
+    useEffect(() => {
+        // First check if there's a saved completion status
+        const savedCompletion = localStorage.getItem('uploadCompletionStatus');
+        if (savedCompletion) {
+            try {
+                const completionData = JSON.parse(savedCompletion);
+                setProcessingStatus(completionData);
+                setIsProcessing(true); // Keep UI visible
+                setIsUploading(false);
+                console.log('📦 Restored completion status from localStorage');
+                return; // Don't poll if already completed
+            } catch (e) {
+                console.error('Error parsing completion status:', e);
+                localStorage.removeItem('uploadCompletionStatus');
+            }
+        }
+
+        const activeTaskId = localStorage.getItem('activeUploadTaskId');
+        if (activeTaskId) {
+            console.log('📦 Resuming upload session for task:', activeTaskId);
+
+            // CRITICAL: Set processing state IMMEDIATELY before async call
+            setIsProcessing(true);
+            setIsUploading(false);
+
+            // Start continuous polling
+            const interval = setInterval(async () => {
+                try {
+                    const statusData = await uploadAPI.getProcessStatus(activeTaskId);
+                    console.log('📊 Polled status:', statusData.status, `${statusData.progress?.processed}/${statusData.progress?.total}`);
+
+                    // Preserve duplicateStats across updates
+                    setProcessingStatus((prev: any) => ({
+                        ...statusData,
+                        duplicateStats: prev?.duplicateStats
+                    }));
+
+                    // Handle duplicate detection on resume
+                    if (statusData.status === 'duplicate_detected' && (statusData as any).duplicates?.length > 0) {
+                        clearInterval(interval);
+                        setPollingInterval(null);
+                        setIsProcessing(false);
+
+                        const duplicates = (statusData as any).duplicates;
+                        setDuplicateQueue(duplicates);
+                        setCurrentDuplicateIndex(0);
+                        setDuplicateInfo(duplicates[0]);
+                        setShowDuplicateModal(true);
+                        setFilesToSkip([]);
+                        setFilesToForceUpload([]);
+
+                        const allFileKeys = duplicates.map((dup: any) => dup.file_key);
+                        setUploadedFiles(allFileKeys);
+
+                        localStorage.removeItem('activeUploadTaskId');
+                        return;
+                    }
+
+                    // Handle completion
+                    if (statusData.status === 'completed' || statusData.status === 'failed') {
+                        clearInterval(interval);
+                        setPollingInterval(null);
+                        localStorage.removeItem('activeUploadTaskId');
+                        localStorage.setItem('uploadCompletionStatus', JSON.stringify(statusData));
+                        console.log('✅ Processing completed, saved to localStorage');
+                    }
+                } catch (error: any) {
+                    console.error('Error polling status:', error);
+                    if (error?.response?.status === 403 || error?.response?.status === 404) {
+                        console.log('Task no longer exists, clearing localStorage');
+                        clearInterval(interval);
+                        setPollingInterval(null);
+                        localStorage.removeItem('activeUploadTaskId');
+                        setIsProcessing(false);
+                        setProcessingStatus(null);
+                    }
+                }
+            }, 1000);
+
+            setPollingInterval(interval);
+        }
+
+        // Cleanup on unmount - IMPORTANT: Don't clear session, just stop polling
+        return () => {
+            if (pollingInterval) {
+                console.log('🔄 Page unmounting - stopping polling (session preserved)');
+                clearInterval(pollingInterval);
+            }
+        };
+    }, []);
+
+    // Browser warning when trying to close/refresh during upload
+    useEffect(() => {
+        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            if (isUploading) {
+                e.preventDefault();
+                e.returnValue = 'Files are uploading to server. Please wait a few seconds.';
+                return 'Files are uploading to server. Please wait a few seconds.';
+            }
+        };
+
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }, [isUploading]);
 
     // Helper function to format time remaining
     const formatTimeRemaining = (seconds: number): string => {
@@ -89,6 +196,13 @@ const UploadPage: React.FC = () => {
             const duplicateCount = selectedFiles.length - uniqueFiles.length;
             if (duplicateCount > 0) {
                 alert(`${duplicateCount} duplicate file(s) removed. Only unique files were added.`);
+            }
+
+            // Reset processing state when selecting new files (e.g., after previous completion)
+            if (processingStatus?.status === 'completed' || processingStatus?.status === 'failed') {
+                setIsProcessing(false);
+                setProcessingStatus(null);
+                localStorage.removeItem('uploadCompletionStatus'); // Clear saved completion
             }
 
             setFiles((prev) => [...prev, ...uniqueFiles]);
@@ -156,8 +270,9 @@ const UploadPage: React.FC = () => {
             const processResponse = await uploadAPI.processInvoices(fileKeys, forceUpload);
             setProcessingStatus(processResponse);
 
-            // Poll for status
+            // Save taskId to localStorage for persistence
             const taskId = processResponse.task_id;
+            localStorage.setItem('activeUploadTaskId', taskId);
             const pollInterval = setInterval(async () => {
                 const status = await uploadAPI.getProcessStatus(taskId);
                 setProcessingStatus(status);
@@ -165,11 +280,14 @@ const UploadPage: React.FC = () => {
 
                 // Handle duplicate detection - START SEQUENTIAL WORKFLOW
                 if (status.status === 'duplicate_detected' && (status as any).duplicates?.length > 0) {
+                    console.log('🔍 DUPLICATE DETECTED:', status);
                     clearInterval(pollInterval);
                     setIsProcessing(false);
 
                     // Initialize duplicate queue
                     const duplicates = (status as any).duplicates;
+                    console.log('📋 Duplicates array:', duplicates);
+
                     setDuplicateQueue(duplicates);
                     setCurrentDuplicateIndex(0);
 
@@ -179,6 +297,26 @@ const UploadPage: React.FC = () => {
                     setShowDuplicateModal(true);
                     setFilesToSkip([]);
                     setFilesToForceUpload([]);
+
+                    // CRITICAL FIX: Update uploadedFiles with R2 keys from the processing status
+                    // Before this point, uploadedFiles contains temp paths
+                    // Now we need to extract the actual R2 keys that were uploaded
+                    // The duplicates contain R2 file_keys
+                    const duplicateR2Keys = duplicates.map((d: any) => d.file_key);
+
+                    // Since backend detected duplicates AFTER uploading ALL files to R2,
+                    // we need to get all R2 keys (duplicates are subset)
+                    // The backend should return all uploaded R2 keys in the status
+                    // For now, set uploadedFiles to the fileKeys that were sent for processing
+                    // These are R2 keys from the initial upload phase
+                    setUploadedFiles((status as any).uploaded_r2_keys || []); // Backend returns ALL R2 keys
+                    // Store in window for passing through call chain (avoids React state timing)
+                    (window as any).__temp_r2_keys = (status as any).uploaded_r2_keys || [];
+
+                    console.log('🔍 Duplicates detected:', duplicates.length);
+                    console.log('📋 Duplicate file keys:', duplicateR2Keys);
+                    console.log('📦 All uploaded R2 keys:', (status as any).uploaded_r2_keys || []);
+
                     return;
                 }
 
@@ -205,21 +343,25 @@ const UploadPage: React.FC = () => {
     // Sequential duplicate handling
     const handleSkipDuplicate = () => {
         const currentDup = duplicateQueue[currentDuplicateIndex];
+        console.log('⏭️ SKIP clicked for:', currentDup.file_key);
         const updatedSkip = [...filesToSkip, currentDup.file_key];
+        console.log('📝 Updated skip list:', updatedSkip);
         setFilesToSkip(updatedSkip);
-        moveToNextDuplicate(updatedSkip, filesToForceUpload);
+        moveToNextDuplicate(updatedSkip, filesToForceUpload, (window as any).__temp_r2_keys || []);
     };
 
     const handleUploadAnyway = () => {
         const currentDup = duplicateQueue[currentDuplicateIndex];
+        console.log('✅ REPLACE clicked for:', currentDup.file_key);
         const updatedForceUpload = [...filesToForceUpload, currentDup.file_key];
+        console.log('📝 Updated force upload list:', updatedForceUpload);
         setFilesToForceUpload(updatedForceUpload);
-        moveToNextDuplicate(filesToSkip, updatedForceUpload);
+        moveToNextDuplicate(filesToSkip, updatedForceUpload, (window as any).__temp_r2_keys || []);
     };
 
 
 
-    const moveToNextDuplicate = (skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload) => {
+    const moveToNextDuplicate = (skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload, allR2Keys: string[] = uploadedFiles) => {
         const nextIndex = currentDuplicateIndex + 1;
 
         if (nextIndex < duplicateQueue.length) {
@@ -232,81 +374,152 @@ const UploadPage: React.FC = () => {
             setShowDuplicateModal(false);
             setDuplicateQueue([]);
             setDuplicateInfo(null);
-            // Pass the arrays directly to avoid React state timing issues
-            processRemainingFiles(skipList, forceUploadList);
+            // Pass the arrays AND R2 keys directly to avoid React state timing issues
+            processRemainingFiles(skipList, forceUploadList, allR2Keys);
         }
     };
 
-    const processRemainingFiles = async (_skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload) => {
+    const processRemainingFiles = async (_skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload, allR2Keys: string[] = uploadedFiles) => {
+        console.log('🚀 processRemainingFiles called');
+        console.log('  Skip list:', _skipList);
+        console.log('  Force upload list (duplicates to replace):', forceUploadList);
+        console.log('  All uploaded R2 keys (parameter):', allR2Keys);
+
         try {
             setIsProcessing(true);
-            // Skip list is used for tracking skipped files in finishProcessing
 
-            // Files that were never checked for duplicates (truly new, not in the initial batch)
-            // NOTE: In current flow, all uploaded files go through duplicate check,
-            // so newFiles might be empty. The real logic is:
-            // - filesToForceUpload = duplicates that user chose to replace
-            // - filesToSkip = duplicates that user chose to skip
-            // - Already processed successfully = files that passed duplicate check and were processed
+            // CRITICAL: Filter uploadedFiles to ensure we only have R2 keys, not temp file paths
+            // R2 keys look like: "Adnak/sales/20260120_093222_IMG_..."
+            // Temp paths look like: "C:\\Users\\MSi\\AppData\\Local\\Temp\\..."
+            const r2FileKeys = allR2Keys;
 
-            // Get files that were neither duplicates nor processed
-            // Since we detect duplicates BEFORE processing, we need to track which files were actually processed
-            // The safest approach: Only process files explicitly marked for force upload
-            // Don't re-process files that weren't duplicates (they were already processed!)
+            console.log('🔑 R2 keys from backend:', r2FileKeys);
 
+            // Calculate which files are NOT duplicates and weren't skipped
+            // These were uploaded to R2 but processing stopped when duplicates were detected
+            console.log('Skip list:', _skipList);
+            console.log('All uploaded R2 keys (parameter):', allR2Keys);
 
-            // Batch 1: Force upload duplicates (user chose to replace)
-            if (forceUploadList.length > 0) {
-                // Clear duplicate status and show processing state
+            // Calculate which files are ACTUALLY new (not duplicates at all)
+            // nonDuplicateFiles should exclude BOTH skipped AND replaced duplicates
+            const allDuplicateKeys = [..._skipList, ...forceUploadList];
+            const nonDuplicateFiles = allR2Keys.filter(key => !allDuplicateKeys.includes(key));
+
+            console.log('📦 Non-duplicate files (need processing):', nonDuplicateFiles);
+            console.log('🔄 Duplicate files to force upload:', forceUploadList);
+
+            // Combine both: non-duplicates (normal process) + forced duplicates (replace old)
+            const allFilesToProcess = [...nonDuplicateFiles, ...forceUploadList];
+
+            if (allFilesToProcess.length > 0) {
+                console.log(`📤 Processing ${allFilesToProcess.length} files total...`);
+                console.log('📤 Processing', allFilesToProcess.length, 'files total...');
+                console.log('  -', nonDuplicateFiles.length, 'non-duplicate(s)');
+                console.log('  -', forceUploadList.length, 'forced duplicate(s)');
+
+                // Show processing state
+                // IMPORTANT: Store counts now to preserve them for summary message
                 setProcessingStatus({
                     task_id: '',
                     status: 'processing',
-                    progress: { total: forceUploadList.length, processed: 0, failed: 0 },
-                    message: 'Processing replaced files...'
+                    progress: { total: allFilesToProcess.length, processed: 0, failed: 0 },
+                    message: `Processing ${allFilesToProcess.length} file(s)...`,
+                    duplicateStats: {  // Store for later summary - use PARAMETERS not state!
+                        skipped: _skipList.length,
+                        replaced: forceUploadList.length,
+                        newFiles: nonDuplicateFiles.length
+                    }
                 });
 
-                const forceResponse = await uploadAPI.processInvoices(forceUploadList, true);
-                setProcessingStatus(forceResponse);
+                // Send all files for processing
+                // CRITICAL: Force upload MUST be true because files are already in R2
+                // (even if we're not force-uploading duplicates, the non-duplicates are in R2)
+                const processResponse = await uploadAPI.processInvoices(allFilesToProcess, true);
+                console.log('✅ Process response:', processResponse);
 
-                // Poll for force upload completion
-                const pollForce = setInterval(async () => {
-                    const status = await uploadAPI.getProcessStatus(forceResponse.task_id);
-                    setProcessingStatus(status);
+                // IMPORTANT: Save task ID for session persistence
+                localStorage.setItem('activeUploadTaskId', processResponse.task_id);
+                console.log('💾 Saved task ID to localStorage:', processResponse.task_id);
+
+                // Preserve duplicateStats from initial status
+                setProcessingStatus((prev: any) => ({
+                    ...processResponse,
+                    duplicateStats: prev?.duplicateStats  // Keep our stored stats
+                }));
+
+                // Poll for completion
+                const interval = setInterval(async () => {
+                    const status = await uploadAPI.getProcessStatus(processResponse.task_id);
+                    // Preserve duplicateStats across polling updates
+                    setProcessingStatus((prev: any) => ({
+                        ...status,
+                        duplicateStats: prev?.duplicateStats  // Keep our stored stats
+                    }));
 
                     if (status.status === 'completed' || status.status === 'failed') {
-                        clearInterval(pollForce);
-                        finishProcessing();
+                        clearInterval(interval);
+                        setPollingInterval(null);
+                        console.log('✅ Processing completed:', status);
+                        finishProcessing(status);  // Pass latest status directly
+                        localStorage.removeItem('activeUploadTaskId');  // Clear session
                     }
                 }, 1000);
+
+                // Store interval for cleanup
+                setPollingInterval(interval);
             } else {
-                // No files to force upload, just finish
+                console.log('⚠️ No files to process - all were skipped');
                 finishProcessing();
             }
         } catch (error) {
-            console.error('Error processing remaining files:', error);
+            console.error('❌ Error processing remaining files:', error);
             setIsProcessing(false);
         }
     };
 
-    const finishProcessing = () => {
-        // Calculate how many files were actually processed
-        const totalFiles = uploadedFiles.length;
-        const skippedCount = filesToSkip.length;
-        const processedCount = totalFiles - skippedCount;
+    const finishProcessing = (latestStatus?: any) => {
+        // Use latest status if provided, otherwise fall back to state
+        const statusToUse = latestStatus || processingStatus;
 
-        // Set a completion status message
-        setProcessingStatus({
-            task_id: '',
-            status: 'completed',
-            progress: {
-                total: totalFiles,
-                processed: processedCount,
-                failed: 0
-            },
-            message: skippedCount > 0
-                ? `Successfully processed ${processedCount} invoice${processedCount !== 1 ? 's' : ''}. Skipped ${skippedCount} duplicate${skippedCount !== 1 ? 's' : ''}.`
-                : `Successfully processed ${processedCount} invoice${processedCount !== 1 ? 's' : ''}.`
-        });
+        // IMPORTANT: Process status already has the correct counts from the backend
+        // Just mark it as completed without recalculating
+        if (statusToUse && statusToUse.progress) {
+            // Calculate summary for user clarity
+            const totalUploaded = files.length;
+            const totalProcessed = statusToUse.progress.processed || 0;
+
+            // Use stored stats if available (set when processing started), otherwise fall back to state
+            const skippedCount = (statusToUse as any).duplicateStats?.skipped ?? filesToSkip.length;
+            const replacedCount = (statusToUse as any).duplicateStats?.replaced ?? filesToForceUpload.length;
+            const newCount = (statusToUse as any).duplicateStats?.newFiles ?? (totalProcessed - replacedCount);
+
+            let summaryMessage = `Successfully processed ${totalProcessed} invoice${totalProcessed !== 1 ? 's' : ''}`;
+
+            // Show breakdown if there were any duplicates (replaced OR skipped)
+            if (replacedCount > 0 || skippedCount > 0) {
+                const parts = [];
+                if (newCount > 0) parts.push(`${newCount} new`);
+                if (replacedCount > 0) parts.push(`${replacedCount} replaced`);
+                if (skippedCount > 0) parts.push(`${skippedCount} skipped`);
+                if (parts.length > 0) {
+                    summaryMessage += ` (${parts.join(', ')})`;
+                }
+            }
+
+            // Backend has valid status - preserve ALL data and just update status + message
+            setProcessingStatus({
+                ...statusToUse,
+                status: 'completed',
+                message: summaryMessage
+            });
+
+            console.log('📊 Processing Summary:');
+            console.log(`  Total uploaded: ${totalUploaded}`);
+            console.log(`  New files: ${newCount}`);
+            console.log(`  Replaced duplicates: ${replacedCount}`);
+            console.log(`  Skipped duplicates: ${skippedCount}`);
+            console.log(`  Total processed: ${totalProcessed}`);
+        }
 
         setIsProcessing(false);
         // DON'T clear files here - keep them visible so user can see completion state
@@ -315,6 +528,9 @@ const UploadPage: React.FC = () => {
         setDuplicateQueue([]);
         setFilesToSkip([]);
         setFilesToForceUpload([]);
+
+        // Clear localStorage task
+        localStorage.removeItem('activeUploadTaskId');
 
         queryClient.invalidateQueries({ queryKey: ['invoices'] });
         queryClient.invalidateQueries({ queryKey: ['review'] });
@@ -354,101 +570,114 @@ const UploadPage: React.FC = () => {
             </div>
 
             {/* Two-Column Layout: Image Preview (Left) + Processing Status (Right) */}
-            {files.length > 0 && (
+            {(files.length > 0 || isProcessing) && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                    {/* LEFT COLUMN: Image Preview & Upload Button */}
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-                        <h3 className="text-base font-semibold text-gray-900 mb-3">
-                            Selected Files ({files.length})
-                        </h3>
+                    {/* LEFT COLUMN: Image Preview & Upload Button - Hide if no files (resume case) */}
+                    {files.length > 0 ? (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                            <h3 className="text-base font-semibold text-gray-900 mb-3">
+                                Selected Files ({files.length})
+                            </h3>
 
-                        {/* Scrollable Image Grid - Increased height */}
-                        <div className="max-h-[280px] overflow-y-auto border border-gray-200 rounded-lg p-3 bg-gray-50 mb-3">
-                            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
-                                {files.map((file, index) => (
-                                    <div
-                                        key={index}
-                                        className="relative group aspect-square bg-white border-2 border-gray-200 rounded-lg overflow-hidden hover:border-blue-400 transition-all shadow-sm hover:shadow-md"
-                                    >
-                                        {/* Image Preview */}
-                                        <img
-                                            src={URL.createObjectURL(file)}
-                                            alt={file.name}
-                                            className="w-full h-full object-cover"
-                                        />
+                            {/* Scrollable Image Grid - Increased height */}
+                            <div className="max-h-[280px] overflow-y-auto border border-gray-200 rounded-lg p-3 bg-gray-50 mb-3">
+                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
+                                    {files.map((file, index) => (
+                                        <div
+                                            key={index}
+                                            className="relative group aspect-square bg-white border-2 border-gray-200 rounded-lg overflow-hidden hover:border-blue-400 transition-all shadow-sm hover:shadow-md"
+                                        >
+                                            {/* Image Preview */}
+                                            <img
+                                                src={URL.createObjectURL(file)}
+                                                alt={file.name}
+                                                className="w-full h-full object-cover"
+                                            />
 
-                                        {/* Overlay with file info */}
-                                        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <div className="absolute bottom-0 left-0 right-0 p-1">
-                                                <p className="text-white text-[10px] font-medium truncate">
-                                                    {file.name}
-                                                </p>
+                                            {/* Overlay with file info */}
+                                            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <div className="absolute bottom-0 left-0 right-0 p-1">
+                                                    <p className="text-white text-[10px] font-medium truncate">
+                                                        {file.name}
+                                                    </p>
+                                                </div>
+                                            </div>
+
+                                            {/* Remove button */}
+                                            <button
+                                                onClick={() => removeFile(index)}
+                                                className="absolute top-0.5 right-0.5 bg-red-500 hover:bg-red-600 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                                                disabled={isUploading || isProcessing}
+                                                title="Remove"
+                                            >
+                                                <X size={12} />
+                                            </button>
+
+                                            {/* File number badge */}
+                                            <div className="absolute top-0.5 left-0.5 bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
+                                                #{index + 1}
                                             </div>
                                         </div>
+                                    ))}
+                                </div>
+                            </div>
 
-                                        {/* Remove button */}
-                                        <button
-                                            onClick={() => removeFile(index)}
-                                            className="absolute top-0.5 right-0.5 bg-red-500 hover:bg-red-600 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                                            disabled={isUploading || isProcessing}
-                                            title="Remove"
-                                        >
-                                            <X size={12} />
-                                        </button>
-
-                                        {/* File number badge */}
-                                        <div className="absolute top-0.5 left-0.5 bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
-                                            #{index + 1}
-                                        </div>
+                            {/* Upload Progress Bar */}
+                            {isUploading && uploadProgress > 0 && (
+                                <div className="mb-3">
+                                    <div className="flex justify-between items-center mb-1">
+                                        <span className="text-xs font-medium text-gray-700">
+                                            Uploading... {uploadedCount}/{totalToUpload}
+                                        </span>
+                                        <span className="text-xs font-medium text-blue-600">
+                                            {uploadProgress}%
+                                        </span>
                                     </div>
-                                ))}
+                                    <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                        <div
+                                            className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-300 ease-out rounded-full"
+                                            style={{
+                                                width: `${uploadProgress}%`
+                                            }}
+                                        />
+                                    </div>
+                                    {estimatedTimeRemaining !== null && estimatedTimeRemaining > 0 && (
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            ~{formatTimeRemaining(estimatedTimeRemaining)} remaining
+                                        </p>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Upload & Process Button - Hide when completed */}
+                            {processingStatus?.status !== 'completed' && (
+                                <button
+                                    onClick={() => handleUploadAndProcess()}
+                                    disabled={isUploading || isProcessing}
+                                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                                >
+                                    {isUploading && <Loader2 className="animate-spin mr-2" size={18} />}
+                                    {isProcessing && <Loader2 className="animate-spin mr-2" size={18} />}
+                                    {isUploading
+                                        ? `Uploading... ${uploadProgress}%`
+                                        : isProcessing
+                                            ? 'Processing...'
+                                            : 'Upload & Process'}
+                                </button>
+                            )}
+                        </div>
+                    ) : (
+                        // When resuming with no files, show a placeholder
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex items-center justify-center min-h-[300px]">
+                            <div className="text-center">
+                                <div className="mx-auto mb-3 w-16 h-16 rounded-full bg-blue-50 flex items-center justify-center">
+                                    <Loader2 className="text-blue-600 animate-spin" size={32} />
+                                </div>
+                                <p className="text-sm font-semibold text-gray-800 mb-1">Background Processing Active</p>
+                                <p className="text-xs text-gray-500">Check progress on the right →</p>
                             </div>
                         </div>
-
-                        {/* Upload Progress Bar */}
-                        {isUploading && uploadProgress > 0 && (
-                            <div className="mb-3">
-                                <div className="flex justify-between items-center mb-1">
-                                    <span className="text-xs font-medium text-gray-700">
-                                        Uploading... {uploadedCount}/{totalToUpload}
-                                    </span>
-                                    <span className="text-xs font-medium text-blue-600">
-                                        {uploadProgress}%
-                                    </span>
-                                </div>
-                                <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-                                    <div
-                                        className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-300 ease-out rounded-full"
-                                        style={{
-                                            width: `${uploadProgress}%`
-                                        }}
-                                    />
-                                </div>
-                                {estimatedTimeRemaining !== null && estimatedTimeRemaining > 0 && (
-                                    <p className="text-xs text-gray-500 mt-1">
-                                        ~{formatTimeRemaining(estimatedTimeRemaining)} remaining
-                                    </p>
-                                )}
-                            </div>
-                        )}
-
-                        {/* Upload & Process Button - Hide when completed */}
-                        {processingStatus?.status !== 'completed' && (
-                            <button
-                                onClick={() => handleUploadAndProcess()}
-                                disabled={isUploading || isProcessing}
-                                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-                            >
-                                {isUploading && <Loader2 className="animate-spin mr-2" size={18} />}
-                                {isProcessing && <Loader2 className="animate-spin mr-2" size={18} />}
-                                {isUploading
-                                    ? `Uploading... ${uploadProgress}%`
-                                    : isProcessing
-                                        ? 'Processing...'
-                                        : 'Upload & Process'}
-                            </button>
-                        )}
-                    </div>
+                    )}
 
                     {/* RIGHT COLUMN: Processing Status */}
                     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
@@ -462,13 +691,13 @@ const UploadPage: React.FC = () => {
                                     {processingStatus.status === 'failed' && (
                                         <XCircle className="text-red-500" size={20} />
                                     )}
-                                    {processingStatus.status === 'processing' && (
+                                    {(processingStatus.status === 'processing' || processingStatus.status === 'uploading') && (
                                         <Loader2 className="animate-spin text-blue-500" size={20} />
                                     )}
                                 </div>
 
                                 {/* Progress Bar */}
-                                {processingStatus.status === 'processing' && processingStatus.progress && (
+                                {(processingStatus.status === 'processing' || processingStatus.status === 'uploading') && processingStatus.progress && (
                                     <div className="mb-3">
                                         <div className="flex justify-between items-center mb-1">
                                             <span className="text-xs font-medium text-gray-700">
@@ -552,6 +781,7 @@ const UploadPage: React.FC = () => {
                                                 // Clear state and navigate
                                                 setFiles([]);
                                                 setProcessingStatus(null);
+                                                localStorage.removeItem('uploadCompletionStatus');
                                                 navigate('/sales/review');
                                             }}
                                             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-3 rounded-lg transition flex items-center justify-center gap-2 text-sm"
@@ -562,6 +792,16 @@ const UploadPage: React.FC = () => {
                                     </div>
                                 )}
                             </>
+                        ) : isProcessing ? (
+                            <div className="h-full flex items-center justify-center text-gray-300 border-2 border-dashed border-gray-200 rounded-lg p-6">
+                                <div className="text-center">
+                                    <Loader2 className="mx-auto mb-3 w-8 h-8 text-blue-500 animate-spin" />
+                                    <p className="text-xs font-medium text-gray-700 mb-1">Loading status...</p>
+                                    <p className="text-xs text-gray-500">
+                                        Fetching processing details
+                                    </p>
+                                </div>
+                            </div>
                         ) : (
                             <div className="h-full flex items-center justify-center text-gray-300 border-2 border-dashed border-gray-200 rounded-lg p-6">
                                 <div className="text-center">

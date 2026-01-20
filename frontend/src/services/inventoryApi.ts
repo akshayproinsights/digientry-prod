@@ -25,9 +25,10 @@ export const inventoryAPI = {
     /**
      * Process inventory files
      */
-    processInventory: async (fileKeys: string[]) => {
+    processInventory: async (fileKeys: string[], forceUpload: boolean = false) => {
         const response = await apiClient.post('/api/inventory/process', {
             file_keys: fileKeys,
+            force_upload: forceUpload,
         });
         return response.data;
     },

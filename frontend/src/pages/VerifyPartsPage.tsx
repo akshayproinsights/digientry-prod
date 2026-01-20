@@ -486,20 +486,20 @@ const VerifyPartsPage: React.FC = () => {
                         <table className="w-full">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Invoice Date</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Invoice Number</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Part Number</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">HNS</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Qty</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Rate</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">CGST</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">SGST</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Net Bill</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Upload Date</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Image</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Delete</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Actions</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Date</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Invoice #</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Part #</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">HSN</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">Qty</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Rate</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">CGST</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">SGST</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Net Bill</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Uploaded</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">Img</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">Del</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-200">
@@ -510,44 +510,44 @@ const VerifyPartsPage: React.FC = () => {
                                     return (
                                         <tr key={item.id} className="hover:bg-gray-50">
                                             {/* Actions */}
-                                            <td className="px-4 py-3">
+                                            <td className="px-2 py-2">
                                                 {isEditing ? (
-                                                    <div className="flex gap-2">
+                                                    <div className="flex gap-1">
                                                         <button
                                                             onClick={handleSave}
-                                                            className="text-green-600 hover:text-green-800 transition"
+                                                            className="text-green-600 hover:text-green-800 transition p-1"
                                                             title="Save"
                                                         >
-                                                            <Save size={18} />
+                                                            <Save size={16} />
                                                         </button>
                                                         <button
                                                             onClick={handleCancelEdit}
-                                                            className="text-red-600 hover:text-red-800 transition"
+                                                            className="text-red-600 hover:text-red-800 transition p-1"
                                                             title="Cancel"
                                                         >
-                                                            <X size={18} />
+                                                            <X size={16} />
                                                         </button>
                                                     </div>
                                                 ) : (
                                                     <button
                                                         onClick={() => handleEdit(item)}
-                                                        className="text-blue-600 hover:text-blue-800 transition"
+                                                        className="text-blue-600 hover:text-blue-800 transition p-1"
                                                         title="Edit"
                                                     >
-                                                        <Edit size={18} />
+                                                        <Edit size={16} />
                                                     </button>
                                                 )}
 
                                             </td>
 
                                             {/* Invoice Date */}
-                                            <td className="px-4 py-3 text-sm">
+                                            <td className="px-2 py-2 text-xs">
                                                 {isEditing ? (
                                                     <input
                                                         type="date"
                                                         value={currentItem.invoice_date || ''}
                                                         onChange={(e) => handleFieldChange('invoice_date', e.target.value)}
-                                                        className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{item.invoice_date || '—'}</span>
@@ -555,57 +555,57 @@ const VerifyPartsPage: React.FC = () => {
                                             </td>
 
                                             {/* Invoice Number */}
-                                            <td className="px-4 py-3 text-sm">
+                                            <td className="px-2 py-2 text-xs">
                                                 {isEditing ? (
                                                     <input
                                                         type="text"
                                                         value={currentItem.invoice_number || ''}
                                                         onChange={(e) => handleFieldChange('invoice_number', e.target.value)}
-                                                        className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
                                                     />
                                                 ) : (
-                                                    <span className="text-gray-900">{item.invoice_number || '—'}</span>
+                                                    <span className="text-gray-900 break-all">{item.invoice_number || '—'}</span>
                                                 )}
                                             </td>
 
                                             {/* Part Number */}
-                                            <td className="px-4 py-3 text-sm">
+                                            <td className="px-2 py-2 text-xs">
                                                 {isEditing ? (
                                                     <input
                                                         type="text"
                                                         value={currentItem.part_number || ''}
                                                         onChange={(e) => handleFieldChange('part_number', e.target.value)}
-                                                        className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
                                                     />
                                                 ) : (
-                                                    <span className="text-gray-900">{item.part_number || '—'}</span>
+                                                    <span className="text-gray-900 break-all">{item.part_number || '—'}</span>
                                                 )}
                                             </td>
 
                                             {/* Description */}
-                                            <td className="px-4 py-3 text-sm">
+                                            <td className="px-2 py-2 text-xs">
                                                 {isEditing ? (
                                                     <input
                                                         type="text"
                                                         value={currentItem.description || ''}
                                                         onChange={(e) => handleFieldChange('description', e.target.value)}
-                                                        className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
                                                     />
                                                 ) : (
-                                                    <span className="text-gray-900 max-w-xs truncate block" title={item.description}>
+                                                    <span className="text-gray-900 max-w-[150px] truncate block" title={item.description}>
                                                         {item.description || '—'}
                                                     </span>
                                                 )}
                                             </td>
 
                                             {/* HSN */}
-                                            <td className="px-4 py-3 text-sm">
+                                            <td className="px-2 py-2 text-xs">
                                                 {isEditing ? (
                                                     <input
                                                         type="text"
                                                         value={currentItem.hsn || ''}
                                                         onChange={(e) => handleFieldChange('hsn', e.target.value)}
-                                                        className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{item.hsn || '—'}</span>
@@ -613,19 +613,16 @@ const VerifyPartsPage: React.FC = () => {
                                             </td>
 
                                             {/* Qty */}
-                                            <td className="px-4 py-3 text-sm">
+                                            <td className="px-2 py-2 text-xs">
                                                 {isEditing ? (
-                                                    <div>
+                                                    <div className="relative">
                                                         <input
                                                             type="number"
                                                             value={currentItem.qty || ''}
                                                             onChange={(e) => handleFieldChange('qty', e.target.value)}
-                                                            className={`w-20 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 ${getFieldError(item.id, 'qty') ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                                                            className={`w-full px-1 py-1 border rounded focus:ring-1 focus:ring-blue-500 text-xs ${getFieldError(item.id, 'qty') ? 'border-red-500 bg-red-50' : 'border-gray-300'
                                                                 }`}
                                                         />
-                                                        {getFieldError(item.id, 'qty') && (
-                                                            <p className="text-xs text-red-600 mt-1">{getFieldError(item.id, 'qty')}</p>
-                                                        )}
                                                     </div>
                                                 ) : (
                                                     <span className="text-gray-900">{item.qty || 0}</span>
@@ -633,20 +630,17 @@ const VerifyPartsPage: React.FC = () => {
                                             </td>
 
                                             {/* Rate */}
-                                            <td className="px-4 py-3 text-sm">
+                                            <td className="px-2 py-2 text-xs">
                                                 {isEditing ? (
-                                                    <div>
+                                                    <div className="relative">
                                                         <input
                                                             type="number"
                                                             step="0.01"
                                                             value={currentItem.rate || ''}
                                                             onChange={(e) => handleFieldChange('rate', e.target.value)}
-                                                            className={`w-24 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 ${getFieldError(item.id, 'rate') ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                                                            className={`w-full px-1 py-1 border rounded focus:ring-1 focus:ring-blue-500 text-xs ${getFieldError(item.id, 'rate') ? 'border-red-500 bg-red-50' : 'border-gray-300'
                                                                 }`}
                                                         />
-                                                        {getFieldError(item.id, 'rate') && (
-                                                            <p className="text-xs text-red-600 mt-1">{getFieldError(item.id, 'rate')}</p>
-                                                        )}
                                                     </div>
                                                 ) : (
                                                     <span className="text-gray-900">₹{item.rate?.toFixed(2) || '0.00'}</span>
@@ -654,14 +648,14 @@ const VerifyPartsPage: React.FC = () => {
                                             </td>
 
                                             {/* CGST */}
-                                            <td className="px-4 py-3 text-sm">
+                                            <td className="px-2 py-2 text-xs">
                                                 {isEditing ? (
                                                     <input
                                                         type="number"
                                                         step="0.01"
                                                         value={currentItem.cgst_percent || ''}
                                                         onChange={(e) => handleFieldChange('cgst_percent', e.target.value)}
-                                                        className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{item.cgst_percent ? `${item.cgst_percent}%` : '—'}</span>
@@ -669,14 +663,14 @@ const VerifyPartsPage: React.FC = () => {
                                             </td>
 
                                             {/* SGST */}
-                                            <td className="px-4 py-3 text-sm">
+                                            <td className="px-2 py-2 text-xs">
                                                 {isEditing ? (
                                                     <input
                                                         type="number"
                                                         step="0.01"
                                                         value={currentItem.sgst_percent || ''}
                                                         onChange={(e) => handleFieldChange('sgst_percent', e.target.value)}
-                                                        className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{item.sgst_percent ? `${item.sgst_percent}%` : '—'}</span>
@@ -684,15 +678,15 @@ const VerifyPartsPage: React.FC = () => {
                                             </td>
 
                                             {/* Net Bill */}
-                                            <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                                            <td className="px-2 py-2 text-xs font-medium text-gray-900">
                                                 ₹{item.net_bill?.toFixed(2) || '0.00'}
                                             </td>
 
                                             {/* Upload Date */}
-                                            <td className="px-4 py-3 text-sm text-gray-600">
-                                                {item.upload_date
-                                                    ? new Date(item.upload_date).toLocaleString('en-IN', {
-                                                        year: 'numeric',
+                                            <td className="px-2 py-2 text-xs text-gray-600">
+                                                {(item.upload_date || item.created_at)
+                                                    ? new Date(item.upload_date || item.created_at).toLocaleString('en-IN', {
+                                                        year: '2-digit',
                                                         month: 'short',
                                                         day: 'numeric',
                                                         hour: '2-digit',
@@ -702,15 +696,15 @@ const VerifyPartsPage: React.FC = () => {
                                             </td>
 
                                             {/* Image */}
-                                            <td className="px-4 py-3 text-sm">
+                                            <td className="px-2 py-2 text-xs">
                                                 {item.receipt_link ? (
                                                     <a
                                                         href={item.receipt_link}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
-                                                        className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 transition"
+                                                        className="inline-flex items-center gap-0.5 text-blue-600 hover:text-blue-800 transition"
                                                     >
-                                                        <ExternalLink size={16} />
+                                                        <ExternalLink size={14} />
                                                         View
                                                     </a>
                                                 ) : (
@@ -719,13 +713,13 @@ const VerifyPartsPage: React.FC = () => {
                                             </td>
 
                                             {/* Delete */}
-                                            <td className="px-4 py-3 text-sm">
+                                            <td className="px-2 py-2 text-xs">
                                                 <button
                                                     onClick={() => handleDelete(item)}
-                                                    className="text-red-600 hover:text-red-800 transition"
+                                                    className="text-red-600 hover:text-red-800 transition p-1"
                                                     title="Delete item"
                                                 >
-                                                    <Trash2 size={18} />
+                                                    <Trash2 size={16} />
                                                 </button>
                                             </td>
                                         </tr>

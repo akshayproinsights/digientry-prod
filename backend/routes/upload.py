@@ -8,9 +8,10 @@ import uuid
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-from auth import get_current_user, get_current_user_r2_bucket
+from auth import get_current_user, get_current_user_r2_bucket, get_current_user_sheet_id
 from services.storage import get_storage_client
 from utils.image_optimizer import optimize_image_for_gemini, should_optimize_image, validate_image_quality
+from config import get_sales_folder
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -50,6 +51,48 @@ class ProcessStatusResponse(BaseModel):
     progress: Dict[str, Any]
     message: str
     duplicates: List[Dict[str, Any]] = []  # Add duplicates field
+    uploaded_r2_keys: List[str] = []  # CRITICAL: R2 keys for frontend
+
+
+@router.get("/test")
+async def test_endpoint():
+    """Test endpoint to verify backend is receiving requests"""
+    import sys
+    # Try multiple output methods
+    print("\n" + "="*80, flush=True)
+    print("🎯 TEST ENDPOINT HIT!", flush=True)
+    print("="*80 + "\n", flush=True)
+    sys.stdout.flush()
+    sys.stderr.write("\n🔥 STDERR TEST ENDPOINT HIT!\n")
+    sys.stderr.flush()
+    logger.info("🎯 TEST ENDPOINT HIT VIA LOGGER")
+    
+    # Also write to a file
+    with open("test_endpoint_log.txt", "a") as f:
+        f.write(f"\n{datetime.now()}: TEST ENDPOINT HIT!\n")
+    
+    return {"message": "Backend is alive!", "timestamp": datetime.now().isoformat()}
+
+
+@router.post("/test-post")
+async def test_post_endpoint(
+    request: ProcessRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    r2_bucket: str = Depends(get_current_user_r2_bucket),
+    sheet_id: str = Depends(get_current_user_sheet_id)
+):
+    """Minimal POST test to isolate crash point - WITH AUTH"""
+    with open("test_post_log.txt", "a") as f:
+        f.write(f"\n{datetime.now()}: POST TEST WITH AUTH HIT!\n")
+        f.write(f"Request: {request}\n")
+        f.write(f"User: {current_user.get('username')}\n")
+        f.write(f"Bucket: {r2_bucket}\n")
+        f.write(f"Sheet: {sheet_id}\n")
+    return {
+        "message": "POST with auth works!", 
+        "received": request.dict(),
+        "user": current_user.get("username")
+    }
 
 
 @router.post("/files", response_model=UploadResponse)
@@ -59,59 +102,58 @@ async def upload_files(
     r2_bucket: str = Depends(get_current_user_r2_bucket)
 ):
     """
-    Upload invoice files to R2 storage concurrently
+    Accept files from frontend and save temporarily on server.
+    Returns immediately with temp file references.
+    R2 upload will happen in background when processing starts.
     """
-    uploaded_files = []
+    import tempfile
+    import os
+    
+    temp_files = []
     username = current_user.get("username", "user")
     
-    # Process files in parallel but limit concurrency to avoid OOM or thread pool exhaustion
-    # R2/S3 usually handles high concurrency well, but image processing is CPU/Memory intensive
-    # Increased to 20 for better bulk upload performance (100+ images)
-    CONCURRENCY_LIMIT = 20
-    semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
-    
-    async def process_single_file(file: UploadFile):
-        async with semaphore:
+    try:
+        # Create temp directory for this batch
+        temp_dir = tempfile.mkdtemp(prefix=f"upload_{username}_")
+        logger.info(f"Created temp directory: {temp_dir}")
+        
+        for file in files:
             try:
-                # Read content asynchronously (this is a FastAPI async method)
+                # Read file content
                 content = await file.read()
                 
-                # Offload blocking CPU/IO tasks to thread pool
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    executor,
-                    upload_single_file_sync,
-                    content,
-                    file.filename,
-                    username,
-                    r2_bucket
-                )
+                # Save to temp file
+                temp_path = os.path.join(temp_dir, file.filename)
+                with open(temp_path, 'wb') as f:
+                    f.write(content)
                 
-                if result:
-                    return result
-                return None
+                # Store temp path with metadata
+                temp_files.append({
+                    "temp_path": temp_path,
+                    "original_filename": file.filename,
+                    "size": len(content)
+                })
+                
+                logger.info(f"Saved temp file: {file.filename} ({len(content)} bytes)")
+                
             except Exception as e:
-                logger.error(f"Error processing {file.filename}: {e}")
-                return None
-
-    # Create tasks for all files
-    total_files = len(files)
-    logger.info(f"Starting bulk upload of {total_files} files with concurrency limit of {CONCURRENCY_LIMIT}")
-    tasks = [process_single_file(file) for file in files]
-    
-    # Wait for all to complete
-    results = await asyncio.gather(*tasks)
-    
-    # Filter out None results
-    uploaded_files = [res for res in results if res]
-    
-    logger.info(f"Bulk upload complete: {len(uploaded_files)}/{total_files} files uploaded successfully")
-    
-    return {
-        "success": True,
-        "uploaded_files": uploaded_files,
-        "message": f"Successfully uploaded {len(uploaded_files)} of {len(files)} file(s)"
-    }
+                logger.error(f"Error saving {file.filename}: {e}")
+                continue
+        
+        logger.info(f"Saved {len(temp_files)}/{len(files)} files to temp storage")
+        
+        # Return temp file references (we'll use temp_path as identifier)
+        temp_refs = [tf["temp_path"] for tf in temp_files]
+        
+        return {
+            "success": True,
+            "uploaded_files": temp_refs,  # These are temp paths now, not R2 keys
+            "message": f"Received {len(temp_files)} of {len(files)} file(s), processing in background"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in upload_files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def upload_single_file_sync(
@@ -127,9 +169,10 @@ def upload_single_file_sync(
     try:
         storage = get_storage_client()
         
-        # Generate unique key
+        # Generate unique key using centralized folder function
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_key = f"{username}/uploads/{timestamp}_{filename}"
+        sales_folder = get_sales_folder(username)
+        file_key = f"{sales_folder}{timestamp}_{filename}"
         
         # Validate image quality
         validation = validate_image_quality(content)
@@ -174,12 +217,12 @@ def upload_single_file_sync(
         return None
 
 
-@router.post("/process", response_model=ProcessResponse)
-async def process_invoices(
+@router.post("/process-files")  # RENAMED from /process to work around routing issue
+async def process_invoices_endpoint(
     request: ProcessRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
     r2_bucket: str = Depends(get_current_user_r2_bucket),
-    sheet_id: str = Depends(lambda u=Depends(get_current_user): u.get("sheet_id"))
+    sheet_id: str = Depends(get_current_user_sheet_id)
 ):
     """
     Trigger invoice processing in thread pool (for blocking I/O operations)
@@ -201,19 +244,35 @@ async def process_invoices(
         "end_time": None
     }
     
-    # Run in thread pool instead of BackgroundTasks
-    # This is necessary because the processor uses blocking I/O (Gemini API, Google Sheets, etc.)
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(
-        executor,
-        process_invoices_sync,
-        task_id,
-        request.file_keys,
-        r2_bucket,
-        sheet_id,
-        current_user.get("username", "user"),
-        request.force_upload  # Pass force_upload parameter
-    )
+    # Run in thread pool for blocking I/O operations
+    try:
+        # FILE LOGGING with UTF-8 encoding (fixes Windows Unicode errors)
+        with open("process_debug.log", "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"{datetime.now()}: RECEIVED PROCESS REQUEST\n")
+            f.write(f"Task ID: {task_id}\n")
+            f.write(f"Files: {request.file_keys}\n")
+            f.write(f"Force upload: {request.force_upload}\n")
+            f.write(f"{'='*80}\n\n")
+        
+        logger.info(f"Submitting task {task_id} to executor...")
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(
+            executor,
+            process_invoices_sync,
+            task_id,
+            request.file_keys,
+            r2_bucket,
+            sheet_id,
+            current_user.get("username", "user"),
+            request.force_upload
+        )
+        logger.info(f"Task {task_id} submitted successfully")
+    except Exception as e:
+        logger.error(f"Failed to submit task {task_id}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to start processing: {str(e)}")
     
     return {
         "task_id": task_id,
@@ -221,6 +280,7 @@ async def process_invoices(
         "message": f"Processing {len(request.file_keys)} file(s) in background",
         "duplicates": []  # Will be populated during processing
     }
+
 
 
 @router.get("/process/status/{task_id}", response_model=ProcessStatusResponse)
@@ -241,13 +301,14 @@ async def get_process_status(
         "status": status.get("status", "unknown"),
         "progress": status.get("progress", {}),
         "message": status.get("message", ""),
-        "duplicates": status.get("duplicates", [])  # Include duplicates info
+        "duplicates": status.get("duplicates", []),  # Include duplicates info
+        "uploaded_r2_keys": status.get("uploaded_r2_keys", [])  # CRITICAL: Include R2 keys for frontend
     }
 
 
 def process_invoices_sync(
     task_id: str,
-    file_keys: List[str],
+    file_keys: List[str],  # These are temp paths now
     r2_bucket: str,
     sheet_id: str,
     username: str,
@@ -255,22 +316,89 @@ def process_invoices_sync(
 ):
     """
     Synchronous background task to process invoices
-    Runs in thread pool to avoid blocking the event loop
+    1. Upload temp files to R2
+    2. Process with Gemini
+    3. Clean up temp files
     """
+    import os
+    import shutil
+    
+    # FILE LOGGING with UTF-8 encoding (fixes Windows Unicode errors)
+    with open("process_debug.log", "a", encoding="utf-8") as f:
+        f.write(f"\nBACKGROUND TASK STARTED\n")
+        f.write(f"{datetime.now()}: Task ID: {task_id}\n")
+        f.write(f"Files to process: {len(file_keys)}\n")
+        f.write(f"Force upload: {force_upload}\n")
+        f.write(f"Username: {username}\n\n")
+    
+    print(f"\n🔥🔥🔥 BACKGROUND TASK STARTED 🔥🔥🔥", flush=True)
+    print(f"Task ID: {task_id}", flush=True)
+    print(f"Files to process: {len(file_keys)}", flush=True)
+    print(f"Force upload: {force_upload}", flush=True)
+    print(f"{'='*80}\n", flush=True)
+    
     logger.info(f"=== BACKGROUND TASK STARTED ===")
     logger.info(f"Task ID: {task_id}")
-    logger.info(f"Files: {file_keys}")
+    logger.info(f"Temp files: {file_keys}")
     logger.info(f"User: {username}")
     logger.info(f"R2 Bucket: {r2_bucket}")
     logger.info(f"Sheet ID: {sheet_id}")
     
+    r2_file_keys = []
+    temp_dir = None
+    
     try:
-        logger.info("Updating status to 'processing'")
+        # Phase 1: Upload temp files to R2 (skip if force_upload=True, files already in R2)
+        if force_upload:
+            # Files are already R2 keys, no need to upload
+            logger.info("Force upload enabled - files already in R2, skipping upload phase")
+            r2_file_keys = file_keys  # file_keys are already R2 keys
+        else:
+            # Normal flow: Upload temp files to R2
+            logger.info("Phase 1: Uploading files to R2...")
+            processing_status[task_id]["status"] = "uploading"
+            processing_status[task_id]["message"] = "Uploading files to cloud storage..."
+            processing_status[task_id]["start_time"] = datetime.now().isoformat()
+            
+            for idx, temp_path in enumerate(file_keys):
+                try:
+                    # Read temp file
+                    with open(temp_path, 'rb') as f:
+                        content = f.read()
+                    
+                    filename = os.path.basename(temp_path)
+                    
+                    # Upload to R2 using existing function
+                    r2_key = upload_single_file_sync(
+                        content=content,
+                        filename=filename,
+                        username=username,
+                        r2_bucket=r2_bucket
+                    )
+                    
+                    if r2_key:
+                        r2_file_keys.append(r2_key)
+                        logger.info(f"Uploaded {idx+1}/{len(file_keys)}: {r2_key}")
+                    
+                    # Update progress
+                    processing_status[task_id]["message"] = f"Uploading to cloud: {idx+1}/{len(file_keys)}"
+                    processing_status[task_id]["progress"]["processed"] = idx
+                    
+                except Exception as e:
+                    logger.error(f"Error uploading {temp_path}: {e}")
+                    continue
+            
+            logger.info(f"R2 upload complete: {len(r2_file_keys)}/{len(file_keys)} files")
+
+        
+        # Phase 2: Process invoices
+        logger.info("Phase 2: Processing invoices with AI...")
         processing_status[task_id]["status"] = "processing"
         processing_status[task_id]["message"] = "Processing invoices..."
-        processing_status[task_id]["start_time"] = datetime.now().isoformat()
+        processing_status[task_id]["progress"]["total"] = len(r2_file_keys)
+        processing_status[task_id]["progress"]["processed"] = 0
         
-        # Define progress callback to update status
+        # Define progress callback
         def update_progress(current_index: int, total: int, current_file: str):
             """Callback to update processing status in real-time"""
             processing_status[task_id]["progress"]["processed"] = current_index
@@ -280,34 +408,43 @@ def process_invoices_sync(
             logger.info(f"Progress: {current_index}/{total} - {current_file}")
         
         # Import the processor
-        logger.info("Importing processor module")
         from services.processor import process_invoices_batch
         
-        logger.info(f"Processing {len(file_keys)} files for user {username}")
+        logger.info(f"Processing {len(r2_file_keys)} files for user {username}")
         
-        # Call the actual processor with progress callback
-        logger.info("Calling process_invoices_batch")
+        # Call the actual processor with R2 keys
         results = process_invoices_batch(
-            file_keys=file_keys,
+            file_keys=r2_file_keys,
             r2_bucket=r2_bucket,
             sheet_id=sheet_id,
             username=username,
             progress_callback=update_progress,
-            force_upload=force_upload  # Pass force_upload parameter
+            force_upload=force_upload
         )
         
         logger.info(f"Processing completed. Results: {results}")
         
         # Check for duplicates
         if results.get("duplicates"):
-            # Duplicates detected - update status accordingly
             processing_status[task_id]["status"] = "duplicate_detected"
+            processing_status[task_id]["progress"]["total"] = results["total"]
+            processing_status[task_id]["progress"]["processed"] = results["processed"]
+            processing_status[task_id]["progress"]["failed"] = results["failed"]
             processing_status[task_id]["duplicates"] = results["duplicates"]
-            processing_status[task_id]["message"] = f"Duplicate invoices detected: {len(results['duplicates'])} file(s)"
+            processing_status[task_id]["uploaded_r2_keys"] = r2_file_keys  # CRITICAL: Frontend needs ALL R2 keys
+            logger.info(f"✅ Set uploaded_r2_keys to processing_status: {r2_file_keys}")
+            
+            duplicate_count = len(results["duplicates"])
+            processed_count = results["processed"]
+            if processed_count > 0:
+                processing_status[task_id]["message"] = f"Processed {processed_count} invoice{'s' if processed_count != 1 else ''}, found {duplicate_count} duplicate{'s' if duplicate_count != 1 else ''}"
+            else:
+                processing_status[task_id]["message"] = f"All files are duplicates: {duplicate_count} file{'s' if duplicate_count != 1 else ''}"
+            
             logger.info(f"Duplicates detected: {len(results['duplicates'])}")
         else:
-            # Update status based on results
             processing_status[task_id]["status"] = "completed"
+            processing_status[task_id]["progress"]["total"] = results["total"]
             processing_status[task_id]["progress"]["processed"] = results["processed"]
             processing_status[task_id]["progress"]["failed"] = results["failed"]
             processing_status[task_id]["end_time"] = datetime.now().isoformat()
@@ -321,8 +458,6 @@ def process_invoices_sync(
             processing_status[task_id]["errors"] = results["errors"]
             logger.warning(f"Processing errors: {results['errors']}")
         
-        logger.info("=== BACKGROUND TASK COMPLETED ===")
-        
     except Exception as e:
         logger.error(f"=== BACKGROUND TASK FAILED ===")
         logger.error(f"Error processing invoices: {e}")
@@ -332,6 +467,20 @@ def process_invoices_sync(
         processing_status[task_id]["status"] = "failed"
         processing_status[task_id]["message"] = f"Processing failed: {str(e)}"
         processing_status[task_id]["end_time"] = datetime.now().isoformat()
+    
+    finally:
+        # Phase 3: Cleanup temp files
+        try:
+            if file_keys:
+                # Get temp directory from first file
+                temp_dir = os.path.dirname(file_keys[0])
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                    logger.info(f"Cleaned up temp directory: {temp_dir}")
+        except Exception as e:
+            logger.error(f"Error cleaning up temp files: {e}")
+        
+        logger.info("=== BACKGROUND TASK COMPLETED ===")
 
 
 @router.delete("/files/{file_key:path}")

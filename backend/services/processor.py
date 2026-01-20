@@ -858,27 +858,12 @@ def process_invoices_batch(
                     results["errors"].append(f"Failed to download: {file_key}")
                 return None
             
-            # ===== DUPLICATE DETECTION =====
-            # Calculate image hash
+            # Calculate image hash (needed for database storage)
             image_hash = calculate_image_hash(image_bytes)
             logger.info(f"Calculated hash for {file_key}: {image_hash[:16]}...")
             
-            # Check for duplicates (unless force_upload is enabled)
-            if not force_upload:
-                duplicate = check_duplicate_invoice(image_hash, username)
-                if duplicate:
-                    # Duplicate found - return special result
-                    logger.warning(f"Duplicate detected for {file_key} - Receipt: {duplicate.get('Receipt Number', 'N/A')}")
-                    with results_lock:
-                        results["duplicates"].append({
-                            "file_key": file_key,
-                            "existing_invoice": duplicate,
-                            "image_hash": image_hash
-                        })
-                    # Don't process further - return None to skip this file
-                    return None
-            else:
-                # Force upload enabled - delete old duplicate if exists
+            # If force_upload is enabled, delete old duplicate before processing
+            if force_upload:
                 logger.info(f"Force upload enabled for {file_key} - checking for old duplicates to delete")
                 duplicate = check_duplicate_invoice(image_hash, username)
                 if duplicate:
@@ -887,17 +872,13 @@ def process_invoices_batch(
             
             
             # Generate permanent public URL
-            logger.info(f"📸 DEBUG: About to generate public URL for file_key: {file_key}")
-            logger.info(f"   - R2 bucket: {r2_bucket}")
             try:
                 receipt_link = storage.get_public_url(r2_bucket, file_key)
                 if not receipt_link:
-                    logger.warning(f"⚠️ DEBUG: Public URL not configured, falling back to R2 path for {file_key}")
+                    logger.warning(f"Public URL not configured for {file_key}, using R2 path")
                     receipt_link = f"r2://{r2_bucket}/{file_key}"
-                else:
-                    logger.info(f"✅ DEBUG: Generated permanent public URL: {receipt_link}")
             except Exception as e:
-                logger.error(f"❌ DEBUG: Failed to generate public URL for {file_key}: {e}")
+                logger.error(f"Failed to generate public URL for {file_key}: {e}")
                 receipt_link = f"r2://{r2_bucket}/{file_key}"
             
             # Update progress - automated processing
@@ -934,6 +915,58 @@ def process_invoices_batch(
                 results["errors"].append(f"Error: {file_key} - {str(e)}")
             return None
     
+    # ===== PHASE 1: PRE-PROCESSING DUPLICATE CHECK =====
+    # Check ALL files for duplicates BEFORE starting any processing
+    # This prevents non-duplicate files from being processed when duplicates exist
+    if not force_upload:
+        logger.info(f"Phase 1: Checking {len(file_keys)} files for duplicates...")
+        duplicates_found = []
+        
+        for idx, file_key in enumerate(file_keys):
+            try:
+                # Download and hash file
+                if progress_callback:
+                    progress_callback(idx, len(file_keys), f"Checking for duplicates: {file_key}")
+                
+                logger.info(f"[{idx + 1}/{len(file_keys)}] Checking: {file_key}")
+                image_bytes = storage.download_file(r2_bucket, file_key)
+                
+                if not image_bytes:
+                    logger.warning(f"Failed to download {file_key} during duplicate check")
+                    continue
+                
+                # Calculate hash and check for duplicate
+                image_hash = calculate_image_hash(image_bytes)
+                logger.info(f"Hash for {file_key}: {image_hash[:16]}...")
+                
+                duplicate = check_duplicate_invoice(image_hash, username)
+                if duplicate:
+                    logger.warning(f"Duplicate detected: {file_key} matches existing receipt {duplicate.get('receipt_number', 'N/A')}")
+                    duplicates_found.append({
+                        "file_key": file_key,
+                        "existing_invoice": duplicate,
+                        "image_hash": image_hash
+                    })
+            except Exception as e:
+                logger.error(f"Error checking {file_key} for duplicates: {e}")
+                continue
+        
+        # If ANY duplicates found, return immediately WITHOUT processing
+        if duplicates_found:
+            logger.info(f"Found {len(duplicates_found)} duplicate(s) - returning without processing")
+            return {
+                "total": len(file_keys),
+                "processed": 0,
+                "failed": 0,
+                "errors": [],
+                "duplicates": duplicates_found
+            }
+        
+        logger.info("No duplicates found - proceeding with processing")
+    else:
+        logger.info("Force upload enabled - skipping pre-processing duplicate check")
+    
+    # ===== PHASE 2: PARALLEL PROCESSING =====
     # Process files in parallel using ThreadPoolExecutor
     logger.info(f"Starting parallel processing of {len(file_keys)} files with {MAX_WORKERS} workers")
     

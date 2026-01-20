@@ -100,9 +100,49 @@ def get_supabase_config() -> Optional[Dict[str, str]]:
     return None
 
 
+def get_sales_folder(username: str) -> str:
+    """
+    Get R2 folder path for sales invoice uploads.
+    
+    Args:
+        username: Username to get folder path for
+        
+    Returns:
+        R2 folder path for sales invoices (e.g., "Adnak/sales/")
+    """
+    return f"{username}/sales/"
+
+
+def get_purchases_folder(username: str) -> str:
+    """
+    Get R2 folder path for purchase/vendor invoice uploads.
+    
+    Args:
+        username: Username to get folder path for
+        
+    Returns:
+        R2 folder path for purchase invoices (e.g., "Adnak/purchases/")
+    """
+    return f"{username}/purchases/"
+
+
+def get_mappings_folder(username: str) -> str:
+    """
+    Get R2 folder path for vendor mapping PDF uploads.
+    
+    Args:
+        username: Username to get folder path for
+        
+    Returns:
+        R2 folder path for vendor mappings (e.g., "Adnak/mappings/")
+    """
+    return f"{username}/mappings/"
+
+
 def get_inventory_r2_folder(username: str) -> str:
     """
     Get R2 folder path for inventory uploads (vendor invoices).
+    DEPRECATED: Use get_purchases_folder() instead.
     
     Args:
         username: Username to get folder path for
@@ -110,10 +150,5 @@ def get_inventory_r2_folder(username: str) -> str:
     Returns:
         R2 folder path for inventory items
     """
-    # For now, hardcoded for Adnak user as per requirements
-    # Future: make this configurable per user in user_configs
-    if username.lower() == "adnak":
-        return "adnak-sir-invoices/Adnak/vendor_invoices/"
-    
-    # Default fallback for other users
-    return f"{username}-invoices/{username}/vendor_invoices/"
+    # Use the new purchases folder function for consistency
+    return get_purchases_folder(username)

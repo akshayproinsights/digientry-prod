@@ -245,7 +245,50 @@ async def update_single_verified_invoice(
     
     except Exception as e:
         logger.error(f"Error updating verified invoice: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update verified invoice: {str(e)}")
+
+
+@router.post("/delete-bulk")
+async def delete_bulk_verified_invoices(
+    request: Dict[str, Any],
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Delete multiple verified invoice records by row_ids
+    """
+    username = current_user.get("username")
+    
+    if not username:
+        raise HTTPException(status_code=400, detail="No username in token")
+    
+    row_ids = request.get('row_ids', [])
+    if not row_ids:
+        raise HTTPException(status_code=400, detail="row_ids array is required")
+    
+    if not isinstance(row_ids, list):
+        raise HTTPException(status_code=400, detail="row_ids must be an array")
+    
+    try:
+        db = get_database_client()
+        
+        # Delete all records matching the row_ids for this user
+        deleted_count = 0
+        for row_id in row_ids:
+            result = db.delete('verified_invoices', {'username': username, 'row_id': row_id})
+            if result:
+                deleted_count += 1
+        
+        logger.info(f"Deleted {deleted_count} verified invoice records for {username}")
+        
+        return {
+            "success": True,
+            "message": f"Deleted {deleted_count} records successfully",
+            "deleted_count": deleted_count
+        }
+    
+    except Exception as e:
+        logger.error(f"Error deleting verified invoices in bulk: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete verified invoices: {str(e)}")
+
 
 
 @router.get("/export")

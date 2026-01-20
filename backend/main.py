@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
-    title="Invoice Insights Hub API",
+    title="DigiEntry API",
     description="Backend API for Invoice Processing and Management",
     version="2.0.0"
 )
@@ -57,7 +57,7 @@ app.include_router(verified.router, prefix="/api/verified", tags=["Verified Invo
 async def root():
     """Root endpoint"""
     return {
-        "message": "Invoice Insights Hub API",
+        "message": "DigiEntry API",
         "version": "2.0.0",
         "status": "running"
     }
@@ -72,16 +72,23 @@ async def health_check():
 @app.on_event("startup")
 async def startup_event():
     """Application startup"""
-    logger.info("Invoice Insights Hub API starting up...")
+    logger.info("DigiEntry API starting up...")
     logger.info(f"CORS origins: {config.settings.cors_origins}")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Application shutdown"""
-    logger.info("Invoice Insights Hub API shutting down...")
+    logger.info("DigiEntry API shutting down...")
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main:app", 
+        host="0.0.0.0", 
+        port=8000, 
+        reload=True,
+        log_level="info",
+        access_log=True  # Enable access logging
+    )

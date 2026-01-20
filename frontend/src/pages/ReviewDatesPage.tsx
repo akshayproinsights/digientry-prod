@@ -226,7 +226,6 @@ const ReviewDatesPage: React.FC = () => {
 
         // CRITICAL: Extract actual receipt number
         // row_id format is "receipt_page_item" or "receipt_item", we need just the receipt part
-        const rowId = sortedRecord['row_id'] || sortedRecord['Row Id'] || sortedRecord['Row_Id'];
         let receiptNumber = sortedRecord['Receipt Number'];
 
         // If receipt number looks like row_id format (contains underscore), extract receipt part
@@ -245,15 +244,11 @@ const ReviewDatesPage: React.FC = () => {
                 // Call API to delete from all sheets
                 await reviewAPI.deleteReceipt(receiptNumber);
 
-                // Update frontend state
-                const originalIndex = records.findIndex(r => r === sortedRecord);
-                const updated = records.filter((_, i) => i !== originalIndex);
-                setRecords(updated);
-
-                // Refresh the page data
-                queryClient.invalidateQueries({ queryKey: ['review-dates'] });
-                queryClient.invalidateQueries({ queryKey: ['review-amounts'] });
-                queryClient.invalidateQueries({ queryKey: ['verified'] });
+                // CRITICAL: Force immediate refetch instead of just invalidating
+                // This ensures the UI updates immediately with fresh data from the database
+                // Note: We don't refetch 'verified' because deleteReceipt doesn't touch verified_invoices
+                await queryClient.refetchQueries({ queryKey: ['review-dates'] });
+                await queryClient.refetchQueries({ queryKey: ['review-amounts'] });
 
                 alert(`Receipt #${receiptNumber} deleted successfully from all sheets`);
             } catch (error) {
@@ -298,26 +293,28 @@ const ReviewDatesPage: React.FC = () => {
                         >
                             {showCompleted ? '✓ Showing Completed' : 'Show Completed'}
                         </button>
-                        <button
-                            onClick={handleSyncFinish}
-                            disabled={syncMutation.isPending}
-                            className={`flex items-center px-4 py-2 rounded-lg transition disabled:opacity-50 ${statusCounts.completed > 0
-                                ? 'bg-green-600 text-white hover:bg-green-700 animate-pulse'
-                                : 'bg-green-600 text-white hover:bg-green-700'
-                                }`}
-                        >
-                            {syncMutation.isPending ? (
-                                <Loader2 className="animate-spin mr-2" size={16} />
-                            ) : (
-                                <RefreshCw className="mr-2" size={16} />
-                            )}
-                            Sync & Finish
-                            {statusCounts.completed > 0 && (
-                                <span className="ml-2 bg-white text-green-600 rounded-full px-2 py-0.5 text-xs font-semibold">
-                                    {statusCounts.completed}
-                                </span>
-                            )}
-                        </button>
+                        {(statusCounts.completed > 0 || statusCounts.pending > 0) && (
+                            <button
+                                onClick={handleSyncFinish}
+                                disabled={syncMutation.isPending}
+                                className={`flex items-center px-4 py-2 rounded-lg transition disabled:opacity-50 ${statusCounts.completed > 0
+                                    ? 'bg-green-600 text-white hover:bg-green-700 animate-pulse'
+                                    : 'bg-green-600 text-white hover:bg-green-700'
+                                    }`}
+                            >
+                                {syncMutation.isPending ? (
+                                    <Loader2 className="animate-spin mr-2" size={16} />
+                                ) : (
+                                    <RefreshCw className="mr-2" size={16} />
+                                )}
+                                Sync & Finish
+                                {statusCounts.completed > 0 && (
+                                    <span className="ml-2 bg-white text-green-600 rounded-full px-2 py-0.5 text-xs font-semibold">
+                                        {statusCounts.completed}
+                                    </span>
+                                )}
+                            </button>
+                        )}
                     </div>
                 </div>
 
@@ -328,11 +325,13 @@ const ReviewDatesPage: React.FC = () => {
                             <div className="flex items-center gap-2">
                                 <span className="text-sm font-medium text-gray-700">Status Summary:</span>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-yellow-100 text-yellow-800">
-                                    {statusCounts.pending} Pending
-                                </span>
-                            </div>
+                            {statusCounts.pending > 0 && (
+                                <div className="flex items-center gap-2">
+                                    <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-yellow-100 text-yellow-800">
+                                        {statusCounts.pending} Pending
+                                    </span>
+                                </div>
+                            )}
                             {statusCounts.completed > 0 && (
                                 <div className="flex items-center gap-2">
                                     <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800">
@@ -345,6 +344,11 @@ const ReviewDatesPage: React.FC = () => {
                                     <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-orange-100 text-orange-800">
                                         {statusCounts.duplicates} Duplicates
                                     </span>
+                                </div>
+                            )}
+                            {statusCounts.pending === 0 && statusCounts.completed === 0 && statusCounts.duplicates === 0 && (
+                                <div className="flex items-center gap-2">
+                                    <span className="text-sm text-gray-600">All caught up! 🎉</span>
                                 </div>
                             )}
                         </div>

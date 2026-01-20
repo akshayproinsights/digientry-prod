@@ -22,6 +22,14 @@ const DuplicateWarningModal: React.FC<DuplicateWarningModalProps> = ({
 }) => {
     const [isClosing, setIsClosing] = useState(false);
 
+    console.log('🎭 DuplicateWarningModal render:', {
+        isOpen,
+        duplicateData,
+        fileName,
+        currentIndex,
+        totalDuplicates
+    });
+
     if (!isOpen) return null;
 
     const handleClose = () => {
@@ -44,12 +52,9 @@ const DuplicateWarningModal: React.FC<DuplicateWarningModalProps> = ({
     const newFileName = extractFileName(fileName);
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-            {/* Backdrop */}
-            <div
-                className="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm"
-                onClick={handleClose}
-            />
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center">
+            {/* Backdrop - NO onClick to prevent accidental dismissal */}
+            <div className="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm" />
 
             {/* Modal */}
             <div className={`relative bg-white rounded-2xl shadow-2xl max-w-3xl w-full mx-4 overflow-hidden transition-all ${isClosing ? 'scale-95 opacity-0' : 'scale-100 opacity-100'}`}>

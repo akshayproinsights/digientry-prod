@@ -1,6 +1,6 @@
 """
 Supabase database client wrapper.
-Handles all database operations for Invoice Insights Hub.
+Handles all database operations for DigiEntry.
 """
 import os
 from typing import Optional, Dict, Any, List

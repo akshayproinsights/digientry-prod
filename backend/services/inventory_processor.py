@@ -503,7 +503,8 @@ def process_inventory_batch(
     file_keys: List[str],
     r2_bucket: str,
     username: str,
-    progress_callback: Optional[Callable] = None
+    progress_callback: Optional[Callable] = None,
+    force_upload: bool = False
 ) -> Dict[str, Any]:
     """
     Process a batch of inventory images with Gemini AI.
@@ -545,41 +546,51 @@ def process_inventory_batch(
             
             # Check for duplicates in inventory_items table
             try:
-                duplicate_check = db.client.table("inventory_items")\
-                    .select("*")\
-                    .eq("image_hash", img_hash)\
-                    .eq("username", username)\
-                    .limit(1)\
-                    .execute()
-                
-                if duplicate_check.data and len(duplicate_check.data) > 0:
-                    # Duplicate found!
-                    existing_record = duplicate_check.data[0]
-                    logger.warning(f"Duplicate detected for {file_key}: image_hash={img_hash}")
+                # If force_upload is True, we skip the check and DELETE existing duplicates
+                if force_upload:
+                    logger.info(f"Force upload enabled. Deleting existing items with hash {img_hash} for replacement.")
+                    db.client.table("inventory_items")\
+                        .delete()\
+                        .eq("image_hash", img_hash)\
+                        .eq("username", username)\
+                        .execute()
+                else:
+                    # Normal flow: Check for duplicates and report them
+                    duplicate_check = db.client.table("inventory_items")\
+                        .select("*")\
+                        .eq("image_hash", img_hash)\
+                        .eq("username", username)\
+                        .limit(1)\
+                        .execute()
                     
-                    # Add to duplicates list for user decision
-                    duplicates.append({
-                        "file_key": file_key,
-                        "image_hash": img_hash,
-                        "existing_record": {
-                            "id": existing_record.get("id"),
-                            "invoice_number": existing_record.get("invoice_number"),
-                            "invoice_date": existing_record.get("invoice_date"),
-                            "receipt_link": existing_record.get("receipt_link"),
-                            "upload_date": existing_record.get("upload_date"),
-                            "part_number": existing_record.get("part_number"),
-                            "description": existing_record.get("description")
-                        },
-                        "message": f"This vendor invoice was already uploaded on {existing_record.get('upload_date', 'unknown date')}"
-                    })
-                    
-                    # Skip processing this file - let user decide
-                    logger.info(f"Skipping {file_key} - duplicate detected")
-                    continue
+                    if duplicate_check.data and len(duplicate_check.data) > 0:
+                        # Duplicate found!
+                        existing_record = duplicate_check.data[0]
+                        logger.warning(f"Duplicate detected for {file_key}: image_hash={img_hash}")
+                        
+                        # Add to duplicates list for user decision
+                        duplicates.append({
+                            "file_key": file_key,
+                            "image_hash": img_hash,
+                            "existing_record": {
+                                "id": existing_record.get("id"),
+                                "invoice_number": existing_record.get("invoice_number"),
+                                "invoice_date": existing_record.get("invoice_date"),
+                                "receipt_link": existing_record.get("receipt_link"),
+                                "upload_date": existing_record.get("upload_date"),
+                                "part_number": existing_record.get("part_number"),
+                                "description": existing_record.get("description")
+                            },
+                            "message": f"This vendor invoice was already uploaded on {existing_record.get('upload_date', 'unknown date')}"
+                        })
+                        
+                        # Skip processing this file - let user decide
+                        logger.info(f"Skipping {file_key} - duplicate detected")
+                        continue
                     
             except Exception as e:
-                logger.error(f"Error checking for duplicates: {e}")
-                # Continue processing even if duplicate check fails
+                logger.error(f"Error checking/handling duplicates: {e}")
+                # Continue processing even if duplicate check fails (unless it was a critical DB error)
             
             # Generate permanent public URL for receipt link
             receipt_link = storage.get_public_url(r2_bucket, file_key)
