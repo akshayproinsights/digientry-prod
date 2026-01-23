@@ -168,3 +168,19 @@ export const deleteStockTransaction = async (params: {
     });
 };
 
+/**
+ * Delete a stock item completely (from stock_levels and vendor_mapping_entries)
+ */
+export const deleteStockItem = async (partNumber: string): Promise<void> => {
+    await apiClient.delete(`/api/stock/item/${encodeURIComponent(partNumber)}`);
+};
+
+/**
+ * Delete multiple stock items at once
+ */
+export const deleteBulkStockItems = async (partNumbers: string[]): Promise<{ deleted_count: number }> => {
+    const response = await apiClient.delete('/api/stock/items/bulk', {
+        data: { part_numbers: partNumbers }
+    });
+    return response.data;
+};

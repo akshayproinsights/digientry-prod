@@ -2,7 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { inventoryAPI } from '../services/inventoryApi';
-import { Search, Loader2, ExternalLink, Download, Edit, Save, X, Trash2 } from 'lucide-react';
+import { Search, Loader2, ExternalLink, Download, Edit, Save, X, Trash2, CheckSquare, Square } from 'lucide-react';
+import DeleteConfirmModal from '../components/DeleteConfirmModal';
 
 interface InventoryItem {
     id: number;
@@ -45,6 +46,15 @@ const VerifyPartsPage: React.FC = () => {
     const [isExporting, setIsExporting] = useState(false);
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
+    // Selection states
+    const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+    const [isSelectAllChecked, setIsSelectAllChecked] = useState(false);
+
+    // Delete confirmation states
+    const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+    const [deleteType, setDeleteType] = useState<'single' | 'bulk'>('single');
+    const [itemToDelete, setItemToDelete] = useState<InventoryItem | null>(null);
+
     // Auto-save refs
     const autoSaveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const isAutoSavingRef = React.useRef(false);
@@ -75,22 +85,33 @@ const VerifyPartsPage: React.FC = () => {
         return () => window.removeEventListener('beforeunload', handleBeforeUnload);
     }, [hasUnsavedChanges]);
 
-    // Set header actions (Export button)
+    // Set header actions (Export button and Bulk Delete if items selected)
     React.useEffect(() => {
         setHeaderActions(
-            <button
-                onClick={handleExport}
-                disabled={isExporting}
-                className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
-            >
-                <Download className="mr-2" size={16} />
-                {isExporting ? 'Exporting...' : 'Export to Excel'}
-            </button>
+            <div className="flex gap-3">
+                {selectedIds.size > 0 && (
+                    <button
+                        onClick={handleBulkDelete}
+                        className="flex items-center px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition"
+                    >
+                        <Trash2 className="mr-2" size={16} />
+                        Delete Selected ({selectedIds.size})
+                    </button>
+                )}
+                <button
+                    onClick={handleExport}
+                    disabled={isExporting}
+                    className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
+                >
+                    <Download className="mr-2" size={16} />
+                    {isExporting ? 'Exporting...' : 'Export to Excel'}
+                </button>
+            </div>
         );
 
         return () => setHeaderActions(null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isExporting]);
+    }, [isExporting, selectedIds]);
 
     // Update item mutation
     const updateItemMutation = useMutation({
@@ -139,6 +160,19 @@ const VerifyPartsPage: React.FC = () => {
         },
         onError: (error) => {
             alert(`Error deleting item: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    });
+
+    // Bulk delete mutation
+    const bulkDeleteMutation = useMutation({
+        mutationFn: async (ids: number[]) => {
+            return inventoryAPI.deleteBulkInventoryItems(ids);
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['inventory-all'] });
+        },
+        onError: (error) => {
+            alert(`Error deleting items: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     });
 
@@ -347,9 +381,81 @@ const VerifyPartsPage: React.FC = () => {
     };
 
     const handleDelete = (item: InventoryItem) => {
-        if (confirm(`Are you sure you want to delete this item: ${item.part_number || item.description}?`)) {
-            deleteItemMutation.mutate(item.id);
+        // Show confirmation modal
+        setItemToDelete(item);
+        setDeleteType('single');
+        setDeleteConfirmOpen(true);
+    };
+
+    const handleSelectRow = (rowId: number) => {
+        const newSelected = new Set(selectedIds);
+        if (newSelected.has(rowId)) {
+            newSelected.delete(rowId);
+        } else {
+            newSelected.add(rowId);
         }
+        setSelectedIds(newSelected);
+
+        // Update select all checkbox state
+        setIsSelectAllChecked(newSelected.size === filteredItems.length && filteredItems.length > 0);
+    };
+
+    const handleSelectAll = () => {
+        if (isSelectAllChecked) {
+            // Deselect all
+            setSelectedIds(new Set());
+            setIsSelectAllChecked(false);
+        } else {
+            // Select all visible records
+            const allIds = new Set(filteredItems.map(item => item.id));
+            setSelectedIds(allIds);
+            setIsSelectAllChecked(true);
+        }
+    };
+
+    const handleBulkDelete = () => {
+        if (selectedIds.size === 0) return;
+
+        // Show confirmation modal
+        setDeleteType('bulk');
+        setDeleteConfirmOpen(true);
+    };
+
+    const confirmDelete = () => {
+        if (deleteType === 'single' && itemToDelete) {
+            // Optimistic update: remove from UI immediately
+            const originalItems = [...items];
+            setItems(items.filter(i => i.id !== itemToDelete.id));
+
+            // Perform deletion
+            deleteItemMutation.mutate(itemToDelete.id, {
+                onError: () => {
+                    // Revert optimistic update on error
+                    setItems(originalItems);
+                }
+            });
+        } else if (deleteType === 'bulk') {
+            const idsToDelete = Array.from(selectedIds);
+
+            // Optimistic update: remove from UI immediately
+            const originalItems = [...items];
+            setItems(items.filter(i => !selectedIds.has(i.id)));
+            setSelectedIds(new Set());
+            setIsSelectAllChecked(false);
+
+            // Perform deletion
+            bulkDeleteMutation.mutate(idsToDelete, {
+                onError: () => {
+                    // Revert optimistic update on error
+                    setItems(originalItems);
+                    setSelectedIds(new Set(idsToDelete));
+                }
+            });
+        }
+
+        // Close modal
+        setDeleteConfirmOpen(false);
+        setItemToDelete(null);
     };
 
     const getFieldError = (itemId: number, field: string): string | null => {
@@ -486,6 +592,15 @@ const VerifyPartsPage: React.FC = () => {
                         <table className="w-full">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
+                                    <th className="px-4 py-3 text-left w-12">
+                                        <button
+                                            onClick={handleSelectAll}
+                                            className="text-gray-600 hover:text-gray-900 transition cursor-pointer p-1"
+                                            title={isSelectAllChecked ? "Deselect all" : "Select all"}
+                                        >
+                                            {isSelectAllChecked ? <CheckSquare size={18} /> : <Square size={18} />}
+                                        </button>
+                                    </th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Actions</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Date</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Invoice #</th>
@@ -509,6 +624,16 @@ const VerifyPartsPage: React.FC = () => {
 
                                     return (
                                         <tr key={item.id} className="hover:bg-gray-50">
+                                            {/* Checkbox */}
+                                            <td className="px-4 py-3">
+                                                <button
+                                                    onClick={() => handleSelectRow(item.id)}
+                                                    className="text-gray-600 hover:text-gray-900 transition cursor-pointer p-1"
+                                                >
+                                                    {selectedIds.has(item.id) ? <CheckSquare size={18} /> : <Square size={18} />}
+                                                </button>
+                                            </td>
+
                                             {/* Actions */}
                                             <td className="px-2 py-2">
                                                 {isEditing ? (
@@ -730,6 +855,24 @@ const VerifyPartsPage: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            {/* Delete Confirmation Modal */}
+            <DeleteConfirmModal
+                isOpen={deleteConfirmOpen}
+                onClose={() => {
+                    setDeleteConfirmOpen(false);
+                    setItemToDelete(null);
+                }}
+                onConfirm={confirmDelete}
+                title={deleteType === 'single' ? 'Delete This Item?' : 'Delete Selected Items?'}
+                message={
+                    deleteType === 'single'
+                        ? `Are you sure you want to delete this item: ${itemToDelete?.part_number || itemToDelete?.description}? This data will be permanently removed from your system.`
+                        : `You are about to delete ${selectedIds.size} items. This data will be permanently removed from your system.`
+                }
+                itemCount={deleteType === 'bulk' ? selectedIds.size : undefined}
+                isDeleting={deleteItemMutation.isPending || bulkDeleteMutation.isPending}
+            />
         </div>
     );
 };

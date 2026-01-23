@@ -2,7 +2,7 @@
 Stock Levels Management Routes
 Tracks real-time inventory stock based on vendor purchases and customer sales.
 """
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.responses import Response
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
@@ -572,6 +572,176 @@ async def delete_vendor_mapping(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/item/{part_number}")
+async def delete_stock_item(
+    part_number: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Delete a stock item completely from the stock register.
+    Removes from stock_levels and vendor_mapping_entries tables,
+    and marks corresponding inventory items as excluded to prevent
+    them from reappearing during stock recalculation.
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        # 1. Mark inventory items as excluded (prevents reappearing during recalculation)
+        exclusion_result = db.client.table("inventory_items")\
+            .update({"excluded_from_stock": True})\
+            .eq("username", username)\
+            .eq("part_number", part_number)\
+            .execute()
+        
+        excluded_count = len(exclusion_result.data) if exclusion_result.data else 0
+        logger.info(f"Marked {excluded_count} inventory_items as excluded for part {part_number}")
+        
+        # 2. Delete from stock_levels table
+        stock_result = db.client.table("stock_levels")\
+            .delete()\
+            .eq("username", username)\
+            .eq("part_number", part_number)\
+            .execute()
+        
+        stock_deleted = len(stock_result.data) if stock_result.data else 0
+        logger.info(f"Deleted {stock_deleted} stock_levels records for part {part_number}")
+        
+        # 3. Delete from vendor_mapping_entries table
+        mapping_result = db.client.table("vendor_mapping_entries")\
+            .delete()\
+            .eq("username", username)\
+            .eq("part_number", part_number)\
+            .execute()
+        
+        mapping_deleted = len(mapping_result.data) if mapping_result.data else 0
+        logger.info(f"Deleted {mapping_deleted} vendor_mapping_entries for part {part_number}")
+        
+        # 4. Also delete from vendor_mapping_sheets if exists
+        sheet_result = db.client.table("vendor_mapping_sheets")\
+            .delete()\
+            .eq("username", username)\
+            .eq("part_number", part_number)\
+            .execute()
+        
+        sheet_deleted = len(sheet_result.data) if sheet_result.data else 0
+        if sheet_deleted > 0:
+            logger.info(f"Deleted {sheet_deleted} vendor_mapping_sheets for part {part_number}")
+        
+        total_deleted = stock_deleted + mapping_deleted + sheet_deleted
+        
+        if total_deleted == 0 and excluded_count == 0:
+            raise HTTPException(status_code=404, detail=f"Stock item {part_number} not found")
+        
+        logger.info(f"✅ Successfully deleted stock item {part_number} (excluded {excluded_count}, deleted {total_deleted} records)")
+        
+        return {
+            "success": True,
+            "message": f"Stock item '{part_number}' deleted successfully",
+            "deleted_count": total_deleted,
+            "excluded_count": excluded_count
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting stock item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/items/bulk")
+async def delete_stock_items_bulk(
+    request: Request,
+    db_client=Depends(get_database_client),
+    current_user: Dict = Depends(get_current_user)
+):
+    """
+    Delete multiple stock items by their part numbers.
+    Deletes from stock_levels, vendor_mapping_entries, and vendor_mapping_sheets tables,
+    and marks corresponding inventory items as excluded to prevent reappearing.
+    """
+    try:
+        body = await request.json()
+        part_numbers = body.get("part_numbers", [])
+        
+        if not part_numbers:
+            raise HTTPException(status_code=400, detail="No part numbers provided")
+        
+        username = current_user.get("username")  # Fixed: was using "email" instead of "username"
+        db = db_client
+        total_deleted = 0
+        total_excluded = 0
+        
+        for part_number in part_numbers:
+            try:
+                # 1. Mark inventory items as excluded
+                exclusion_result = db.client.table("inventory_items")\
+                    .update({"excluded_from_stock": True})\
+                    .eq("username", username)\
+                    .eq("part_number", part_number)\
+                    .execute()
+                
+                excluded_count = len(exclusion_result.data) if exclusion_result.data else 0
+                total_excluded += excluded_count
+                if excluded_count > 0:
+                    logger.info(f"Marked {excluded_count} inventory_items as excluded for part {part_number}")
+                
+                # 2. Delete from stock_levels
+                stock_result = db.client.table("stock_levels")\
+                    .delete()\
+                    .eq("username", username)\
+                    .eq("part_number", part_number)\
+                    .execute()
+                
+                stock_deleted = len(stock_result.data) if stock_result.data else 0
+                logger.info(f"Deleted {stock_deleted} stock_levels records for part {part_number}")
+                
+                # 3. Delete from vendor_mapping_entries
+                mapping_result = db.client.table("vendor_mapping_entries")\
+                    .delete()\
+                    .eq("username", username)\
+                    .eq("part_number", part_number)\
+                    .execute()
+                
+                mapping_deleted = len(mapping_result.data) if mapping_result.data else 0
+                if mapping_deleted > 0:
+                    logger.info(f"Deleted {mapping_deleted} vendor_mapping_entries for part {part_number}")
+                
+                # 4. Delete from vendor_mapping_sheets
+                sheet_result = db.client.table("vendor_mapping_sheets")\
+                    .delete()\
+                    .eq("username", username)\
+                    .eq("part_number", part_number)\
+                    .execute()
+                
+                sheet_deleted = len(sheet_result.data) if sheet_result.data else 0
+                if sheet_deleted > 0:
+                    logger.info(f"Deleted {sheet_deleted} vendor_mapping_sheets for part {part_number}")
+                
+                item_total = stock_deleted + mapping_deleted + sheet_deleted
+                total_deleted += item_total
+                logger.info(f"✅ Deleted stock item {part_number} (excluded {excluded_count}, deleted {item_total} records)")
+                
+            except Exception as item_error:
+                logger.error(f"Error deleting item {part_number}: {item_error}")
+                # Continue with other items even if one fails
+        
+        return {
+            "success": True,
+            "message": f"Successfully deleted {len(part_numbers)} stock item(s)",
+            "deleted_count": len(part_numbers),
+            "total_records_deleted": total_deleted,
+            "total_excluded": total_excluded
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during bulk stock delete: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete stock items: {str(e)}")
+
+
+
 
 @router.post("/calculate")
 async def calculate_stock_levels(
@@ -605,10 +775,11 @@ def recalculate_stock_for_user(username: str):
     
     logger.info(f"Starting stock recalculation for {username}")
     
-    # 1. Get all vendor invoice items (IN transactions)
+    # 1. Get all vendor invoice items (IN transactions) - EXCLUDING items marked as deleted
     vendor_items = db.client.table("inventory_items")\
         .select("part_number, description, qty, rate, invoice_date")\
         .eq("username", username)\
+        .eq("excluded_from_stock", False)\
         .execute()
     
     vendor_data = vendor_items.data or []

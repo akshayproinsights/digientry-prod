@@ -67,6 +67,14 @@ export const inventoryAPI = {
         return response.data;
     },
 
+    /**
+     * Delete multiple inventory items by IDs
+     */
+    deleteBulkInventoryItems: async (ids: number[]) => {
+        const response = await apiClient.post('/api/inventory/items/delete-bulk', { ids });
+        return response.data;
+    },
+
     deleteByImageHash: async (imageHash: string) => {
         const response = await apiClient.delete(`/api/inventory/by-hash/${imageHash}`);
         return response.data;

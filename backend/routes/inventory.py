@@ -502,6 +502,7 @@ async def delete_inventory_item(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
 @router.delete("/by-hash/{image_hash}")
 async def delete_by_image_hash(
     image_hash: str,
@@ -536,6 +537,56 @@ async def delete_by_image_hash(
     except Exception as e:
         logger.error(f"Error deleting inventory items by image_hash: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/items/delete-bulk")
+async def delete_bulk_inventory_items(
+    request: Dict[str, Any],
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Delete multiple inventory items by IDs
+    """
+    from database import get_database_client
+    
+    username = current_user.get("username")
+    
+    if not username:
+        raise HTTPException(status_code=400, detail="No username in token")
+    
+    ids = request.get('ids', [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="ids array is required")
+    
+    if not isinstance(ids, list):
+        raise HTTPException(status_code=400, detail="ids must be an array")
+    
+    try:
+        db = get_database_client()
+        
+        # Delete all items matching the IDs for this user
+        deleted_count = 0
+        for item_id in ids:
+            response = db.client.table("inventory_items")\
+                .delete()\
+                .eq("id", item_id)\
+                .eq("username", username)\
+                .execute()
+            
+            if response.data:
+                deleted_count += 1
+        
+        logger.info(f"Deleted {deleted_count} inventory items for {username}")
+        
+        return {
+            "success": True,
+            "message": f"Deleted {deleted_count} items successfully",
+            "deleted_count": deleted_count
+        }
+    
+    except Exception as e:
+        logger.error(f"Error deleting inventory items in bulk: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete inventory items: {str(e)}")
 
 
 @router.get("/export")

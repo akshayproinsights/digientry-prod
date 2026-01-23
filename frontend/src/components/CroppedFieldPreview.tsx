@@ -169,7 +169,7 @@ const CroppedFieldPreview: React.FC<CroppedFieldPreviewProps> = ({
                         <canvas
                             ref={combinedCanvasRef}
                             className="w-full h-auto"
-                            style={{ imageRendering: 'crisp-edges' }}
+                            style={{ imageRendering: 'auto' }}
                         />
                     )}
                 </div>
@@ -206,7 +206,7 @@ const CroppedFieldPreview: React.FC<CroppedFieldPreviewProps> = ({
                                         <canvas
                                             ref={el => canvasRefs.current[field] = el}
                                             className="w-full h-auto"
-                                            style={{ imageRendering: 'crisp-edges' }}
+                                            style={{ imageRendering: 'auto' }}
                                         />
                                     )}
                                 </div>

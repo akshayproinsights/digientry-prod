@@ -35,7 +35,7 @@ const StatusToggle: React.FC<StatusToggleProps> = ({ status, onChange, disabled 
                         transition-all duration-200 ease-in-out
                         disabled:opacity-50 disabled:cursor-not-allowed
                         ${isPending
-                            ? 'bg-amber-100 text-amber-700 shadow-sm'  // Softer pending color
+                            ? 'bg-amber-500 text-white shadow-sm'  // More visible pending color
                             : 'bg-transparent text-gray-600 hover:bg-gray-100'
                         }
                     `}
@@ -55,7 +55,7 @@ const StatusToggle: React.FC<StatusToggleProps> = ({ status, onChange, disabled 
                         transition-all duration-200 ease-in-out
                         disabled:opacity-50 disabled:cursor-not-allowed
                         ${!isPending
-                            ? 'bg-green-600 text-white shadow-sm'
+                            ? 'bg-green-600 text-white shadow-sm'  // Solid, reassuring green
                             : 'bg-transparent text-gray-600 hover:bg-gray-100'
                         }
                     `}

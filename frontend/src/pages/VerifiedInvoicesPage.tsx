@@ -3,9 +3,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { verifiedAPI } from '../services/api';
 import { Search, Download, Loader2, ExternalLink, Trash2, Edit, X, CheckSquare, Square } from 'lucide-react';
+import DeleteConfirmModal from '../components/DeleteConfirmModal';
 
 interface VerifiedInvoice {
-    row_id?: number;
+    Row_Id?: number;
     'Receipt Number'?: string;
     'Date'?: string;
     'Customer Name'?: string;
@@ -50,6 +51,11 @@ const VerifiedInvoicesPage: React.FC = () => {
     const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
     const [isSelectAllChecked, setIsSelectAllChecked] = useState(false);
 
+    // Delete confirmation states
+    const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+    const [deleteType, setDeleteType] = useState<'single' | 'bulk'>('single');
+    const [recordToDelete, setRecordToDelete] = useState<VerifiedInvoice | null>(null);
+
     // Refs for auto-save
     const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const isAutoSavingRef = useRef(false);
@@ -93,23 +99,6 @@ const VerifiedInvoicesPage: React.FC = () => {
         return () => window.removeEventListener('beforeunload', handleBeforeUnload);
     }, [hasUnsavedChanges]);
 
-    // Set header actions (Export button)
-    useEffect(() => {
-        setHeaderActions(
-            <button
-                onClick={handleExport}
-                disabled={isExporting}
-                className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
-            >
-                <Download className="mr-2" size={16} />
-                {isExporting ? 'Exporting...' : 'Export to Excel'}
-            </button>
-        );
-
-        return () => setHeaderActions(null);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isExporting]);
-
     // Individual row update mutation
     const updateRowMutation = useMutation({
         mutationFn: async ({ record }: { record: VerifiedInvoice }) => {
@@ -148,17 +137,18 @@ const VerifiedInvoicesPage: React.FC = () => {
         }
     });
 
-    // Delete row mutation
+    // Delete row mutation - uses the same bulk delete API for single rows
     const deleteRowMutation = useMutation({
-        mutationFn: async (record: VerifiedInvoice) => {
-            const allRecords = records.filter(r => r.row_id !== record.row_id);
-            return verifiedAPI.save(allRecords);
+        mutationFn: async (rowId: number) => {
+            return verifiedAPI.deleteBulk([rowId]);
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['verified'] });
         },
         onError: (error) => {
-            alert(`Error deleting row: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+            setErrorNotification(`Failed to delete record: ${errorMsg}`);
+            setTimeout(() => setErrorNotification(null), 5000);
         }
     });
 
@@ -176,6 +166,35 @@ const VerifiedInvoicesPage: React.FC = () => {
             alert(`Error deleting records: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     });
+
+    // Set header actions (Export button + Bulk Delete button)
+    useEffect(() => {
+        setHeaderActions(
+            <div className="flex items-center gap-3">
+                {selectedIds.size > 0 && (
+                    <button
+                        onClick={handleBulkDelete}
+                        disabled={bulkDeleteMutation.isPending}
+                        className="flex items-center px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50"
+                    >
+                        <Trash2 className="mr-2" size={16} />
+                        {bulkDeleteMutation.isPending ? 'Deleting...' : `Delete Selected (${selectedIds.size})`}
+                    </button>
+                )}
+                <button
+                    onClick={handleExport}
+                    disabled={isExporting}
+                    className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
+                >
+                    <Download className="mr-2" size={16} />
+                    {isExporting ? 'Exporting...' : 'Export to Excel'}
+                </button>
+            </div>
+        );
+
+        return () => setHeaderActions(null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isExporting, selectedIds.size, bulkDeleteMutation.isPending]);
 
     // Validate field value
     const validateField = (field: string, value: any): string | null => {
@@ -324,9 +343,53 @@ const VerifiedInvoicesPage: React.FC = () => {
     };
 
     const handleDeleteRow = async (record: VerifiedInvoice) => {
-        if (confirm('Are you sure you want to delete this row from Verified Invoices?')) {
-            deleteRowMutation.mutate(record);
+        if (!record.Row_Id) {
+            setErrorNotification('Cannot delete: Record ID is missing');
+            setTimeout(() => setErrorNotification(null), 3000);
+            return;
         }
+
+        // Show confirmation modal
+        setRecordToDelete(record);
+        setDeleteType('single');
+        setDeleteConfirmOpen(true);
+    };
+
+    const confirmDelete = () => {
+        if (deleteType === 'single' && recordToDelete?.Row_Id) {
+            // Optimistic update: remove from UI immediately
+            const originalRecords = [...records];
+            setRecords(records.filter(r => r.Row_Id !== recordToDelete.Row_Id));
+
+            // Perform deletion
+            deleteRowMutation.mutate(recordToDelete.Row_Id, {
+                onError: () => {
+                    // Revert optimistic update on error
+                    setRecords(originalRecords);
+                }
+            });
+        } else if (deleteType === 'bulk') {
+            const idsToDelete = Array.from(selectedIds);
+
+            // Optimistic update: remove from UI immediately
+            const originalRecords = [...records];
+            setRecords(records.filter(r => !selectedIds.has(r.Row_Id || -1)));
+            setSelectedIds(new Set());
+            setIsSelectAllChecked(false);
+
+            // Perform deletion
+            bulkDeleteMutation.mutate(idsToDelete, {
+                onError: () => {
+                    // Revert optimistic update on error
+                    setRecords(originalRecords);
+                    setSelectedIds(new Set(idsToDelete));
+                }
+            });
+        }
+
+        // Close modal
+        setDeleteConfirmOpen(false);
+        setRecordToDelete(null);
     };
 
     const handleSelectRow = (rowId: number | undefined) => {
@@ -351,7 +414,7 @@ const VerifiedInvoicesPage: React.FC = () => {
             setIsSelectAllChecked(false);
         } else {
             // Select all visible records
-            const allIds = new Set(records.map(r => r.row_id).filter((id): id is number => id !== undefined));
+            const allIds = new Set(records.map(r => r.Row_Id).filter((id): id is number => id !== undefined));
             setSelectedIds(allIds);
             setIsSelectAllChecked(true);
         }
@@ -360,16 +423,59 @@ const VerifiedInvoicesPage: React.FC = () => {
     const handleBulkDelete = async () => {
         if (selectedIds.size === 0) return;
 
-        const count = selectedIds.size;
-        if (confirm(`Are you sure you want to delete ${count} selected record${count > 1 ? 's' : ''}?`)) {
-            bulkDeleteMutation.mutate(Array.from(selectedIds));
-        }
+        // Show confirmation modal
+        setDeleteType('bulk');
+        setDeleteConfirmOpen(true);
     };
 
     const getFieldError = (index: number, field: string): string | null => {
         const errors = validationErrors[index] || [];
         const error = errors.find(e => e.field === field);
         return error ? error.message : null;
+    };
+
+    // Format date to DD-MM-YYYY (Indian format)
+    const formatIndianDate = (dateString: string | undefined): string => {
+        if (!dateString) return '—';
+        try {
+            const date = new Date(dateString);
+            if (isNaN(date.getTime())) return dateString;
+            const day = String(date.getDate()).padStart(2, '0');
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const year = date.getFullYear();
+            return `${day}-${month}-${year}`;
+        } catch {
+            return dateString;
+        }
+    };
+
+    // Format currency with ₹ symbol
+    const formatCurrency = (value: number | string | undefined): string => {
+        if (value === undefined || value === null || value === '') return '—';
+        const num = typeof value === 'string' ? parseFloat(value) : value;
+        if (isNaN(num)) return '—';
+        return `₹${num.toLocaleString('en-IN')}`;
+    };
+
+    // Get type badge with icon and color
+    const getTypeBadge = (type: string | undefined) => {
+        if (!type) return <span className="text-gray-400">—</span>;
+
+        const typeUpper = type.toUpperCase();
+        if (typeUpper.includes('PART')) {
+            return (
+                <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">
+                    <span>📦</span> Part
+                </span>
+            );
+        } else if (typeUpper.includes('LABOUR') || typeUpper.includes('LABOR') || typeUpper.includes('SERVICE')) {
+            return (
+                <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium bg-orange-100 text-orange-800">
+                    <span>🔧</span> Labour
+                </span>
+            );
+        }
+        return <span className="text-gray-900">{type}</span>;
     };
 
     return (
@@ -513,20 +619,10 @@ const VerifiedInvoicesPage: React.FC = () => {
                             </div>
                         </div>
                     )}
-                    <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                    <div className="px-6 py-4 border-b border-gray-200">
                         <p className="text-sm text-gray-600">
                             Showing <span className="font-medium">{records.length}</span> verified records
                         </p>
-                        {selectedIds.size > 0 && (
-                            <button
-                                onClick={handleBulkDelete}
-                                disabled={bulkDeleteMutation.isPending}
-                                className="flex items-center px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50"
-                            >
-                                <Trash2 className="mr-2" size={16} />
-                                {bulkDeleteMutation.isPending ? 'Deleting...' : `Delete Selected (${selectedIds.size})`}
-                            </button>
-                        )}
                     </div>
                     <div className="overflow-x-auto">
                         <table className="w-full">
@@ -535,17 +631,13 @@ const VerifiedInvoicesPage: React.FC = () => {
                                     <th className="px-4 py-3 text-left">
                                         <button
                                             type="button"
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleSelectAll();
-                                            }}
-                                            className="text-gray-600 hover:text-gray-900 transition cursor-pointer"
+                                            onClick={handleSelectAll}
+                                            className="text-gray-600 hover:text-gray-900 transition cursor-pointer p-1"
                                             title={isSelectAllChecked ? "Deselect All" : "Select All"}
                                         >
                                             {isSelectAllChecked ? <CheckSquare size={20} /> : <Square size={20} />}
                                         </button>
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Receipt #</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
@@ -555,9 +647,8 @@ const VerifiedInvoicesPage: React.FC = () => {
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Qty</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Rate</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Link</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Upload Date</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Delete</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase sticky right-0 bg-gray-50">Actions</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-200">
@@ -582,21 +673,195 @@ const VerifiedInvoicesPage: React.FC = () => {
                                             <td className="px-4 py-3">
                                                 <button
                                                     type="button"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        handleSelectRow(record.row_id);
-                                                    }}
-                                                    className="text-gray-600 hover:text-gray-900 transition cursor-pointer"
+                                                    onClick={() => handleSelectRow(record.Row_Id)}
+                                                    className="text-gray-600 hover:text-gray-900 transition cursor-pointer p-1"
                                                 >
-                                                    {selectedIds.has(record.row_id || -1) ?
+                                                    {selectedIds.has(record.Row_Id || -1) ?
                                                         <CheckSquare size={18} /> :
                                                         <Square size={18} />
                                                     }
                                                 </button>
                                             </td>
 
-                                            {/* Actions */}
+                                            {/* Receipt Number - Clickable link to receipt */}
+                                            <td className="px-4 py-3 text-sm">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="text"
+                                                        value={currentItem['Receipt Number'] || ''}
+                                                        onChange={(e) => handleFieldChange('Receipt Number', e.target.value)}
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                                                    />
+                                                ) : record['Receipt Link'] ? (
+                                                    <a
+                                                        href={record['Receipt Link']}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="text-blue-600 hover:text-blue-800 hover:underline inline-flex items-center gap-1"
+                                                    >
+                                                        {record['Receipt Number'] || '—'}
+                                                        <ExternalLink size={14} />
+                                                    </a>
+                                                ) : (
+                                                    <span className="text-gray-900">{record['Receipt Number'] || '—'}</span>
+                                                )}
+                                            </td>
+
+                                            {/* Date - DD-MM-YYYY format */}
+                                            <td className="px-4 py-3 text-sm">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="text"
+                                                        value={currentItem['Date'] || ''}
+                                                        onChange={(e) => handleFieldChange('Date', e.target.value)}
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-28 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                                                        placeholder="DD-MM-YYYY"
+                                                    />
+                                                ) : (
+                                                    <span className="text-gray-900">{formatIndianDate(record['Date'])}</span>
+                                                )}
+                                            </td>
+
+                                            {/* Customer Name */}
+                                            <td className="px-4 py-3 text-sm">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="text"
+                                                        value={currentItem['Customer Name'] || ''}
+                                                        onChange={(e) => handleFieldChange('Customer Name', e.target.value)}
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-32 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                                                    />
+                                                ) : (
+                                                    <span className="text-gray-900">{record['Customer Name'] || '—'}</span>
+                                                )}
+                                            </td>
+
+                                            {/* Vehicle Number - Bold and larger font for visual prominence */}
                                             <td className="px-4 py-3">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="text"
+                                                        value={currentItem['Car Number'] || currentItem['Vehicle Number'] || ''}
+                                                        onChange={(e) => handleFieldChange('Car Number', e.target.value)}
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-28 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed font-bold"
+                                                    />
+                                                ) : (
+                                                    <span className="text-gray-900 font-bold text-base">
+                                                        {record['Car Number'] || record['Vehicle Number'] || '—'}
+                                                    </span>
+                                                )}
+                                            </td>
+
+                                            {/* Description */}
+                                            <td className="px-4 py-3 text-sm">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="text"
+                                                        value={currentItem['Description'] || ''}
+                                                        onChange={(e) => handleFieldChange('Description', e.target.value)}
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-40 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                                                    />
+                                                ) : (
+                                                    <span className="text-gray-900 max-w-xs truncate block" title={record['Description']}>
+                                                        {record['Description'] || '—'}
+                                                    </span>
+                                                )}
+                                            </td>
+
+                                            {/* Type - Color-coded badges */}
+                                            <td className="px-4 py-3 text-sm">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="text"
+                                                        value={currentItem['Type'] || ''}
+                                                        onChange={(e) => handleFieldChange('Type', e.target.value)}
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-24 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                                                        placeholder="Part/Labour"
+                                                    />
+                                                ) : (
+                                                    getTypeBadge(record['Type'])
+                                                )}
+                                            </td>
+
+                                            {/* Quantity */}
+                                            <td className="px-4 py-3 text-sm">
+                                                {isEditing ? (
+                                                    <div>
+                                                        <input
+                                                            type="number"
+                                                            step="0.1"
+                                                            value={currentItem['Quantity'] || ''}
+                                                            onChange={(e) => handleFieldChange('Quantity', e.target.value)}
+                                                            disabled={saveStatus === 'saving'}
+                                                            className={`w-16 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed ${getFieldError(index, 'Quantity') ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                                                                }`}
+                                                        />
+                                                        {getFieldError(index, 'Quantity') && (
+                                                            <p className="text-xs text-red-600 mt-1">{getFieldError(index, 'Quantity')}</p>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-gray-900">{record['Quantity'] || '—'}</span>
+                                                )}
+                                            </td>
+
+                                            {/* Rate - with ₹ symbol */}
+                                            <td className="px-4 py-3 text-sm">
+                                                {isEditing ? (
+                                                    <div>
+                                                        <input
+                                                            type="number"
+                                                            step="0.01"
+                                                            value={currentItem['Rate'] || ''}
+                                                            onChange={(e) => handleFieldChange('Rate', e.target.value)}
+                                                            disabled={saveStatus === 'saving'}
+                                                            className={`w-20 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed ${getFieldError(index, 'Rate') ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                                                                }`}
+                                                        />
+                                                        {getFieldError(index, 'Rate') && (
+                                                            <p className="text-xs text-red-600 mt-1">{getFieldError(index, 'Rate')}</p>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-gray-900">{formatCurrency(record['Rate'])}</span>
+                                                )}
+                                            </td>
+
+                                            {/* Amount - with ₹ symbol */}
+                                            <td className="px-4 py-3 text-sm">
+                                                {isEditing ? (
+                                                    <div>
+                                                        <input
+                                                            type="number"
+                                                            step="0.01"
+                                                            value={currentItem['Amount'] || ''}
+                                                            onChange={(e) => handleFieldChange('Amount', e.target.value)}
+                                                            disabled={saveStatus === 'saving'}
+                                                            className={`w-24 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed ${getFieldError(index, 'Amount') ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                                                                }`}
+                                                        />
+                                                        {getFieldError(index, 'Amount') && (
+                                                            <p className="text-xs text-red-600 mt-1">{getFieldError(index, 'Amount')}</p>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-gray-900">{formatCurrency(record['Amount'])}</span>
+                                                )}
+                                            </td>
+
+                                            {/* Upload Date - DD-MM-YYYY format */}
+                                            <td className="px-4 py-3 text-sm text-gray-600">
+                                                {formatIndianDate(record['Upload Date'])}
+                                            </td>
+
+                                            {/* Actions - Sticky column with Edit + Delete side by side */}
+                                            <td className="px-4 py-3 text-sm sticky right-0 bg-white">
                                                 {isEditing ? (
                                                     <div className="flex items-center gap-2">
                                                         {/* Status Badge */}
@@ -627,212 +892,23 @@ const VerifiedInvoicesPage: React.FC = () => {
                                                         </button>
                                                     </div>
                                                 ) : (
-                                                    <button
-                                                        onClick={() => handleEdit(record, index)}
-                                                        className="text-blue-600 hover:text-blue-800 transition"
-                                                        title="Edit"
-                                                    >
-                                                        <Edit size={18} />
-                                                    </button>
-                                                )}
-                                            </td>
-
-                                            {/* Receipt Number */}
-                                            <td className="px-4 py-3 text-sm">
-                                                {isEditing ? (
-                                                    <input
-                                                        type="text"
-                                                        value={currentItem['Receipt Number'] || ''}
-                                                        onChange={(e) => handleFieldChange('Receipt Number', e.target.value)}
-                                                        disabled={saveStatus === 'saving'}
-                                                        className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                                                    />
-                                                ) : (
-                                                    <span className="text-gray-900">{record['Receipt Number'] || '—'}</span>
-                                                )}
-                                            </td>
-
-                                            {/* Date */}
-                                            <td className="px-4 py-3 text-sm">
-                                                {isEditing ? (
-                                                    <input
-                                                        type="text"
-                                                        value={currentItem['Date'] || ''}
-                                                        onChange={(e) => handleFieldChange('Date', e.target.value)}
-                                                        disabled={saveStatus === 'saving'}
-                                                        className="w-28 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                                                        placeholder="DD-MMM-YYYY"
-                                                    />
-                                                ) : (
-                                                    <span className="text-gray-900">{record['Date'] || '—'}</span>
-                                                )}
-                                            </td>
-
-                                            {/* Customer Name */}
-                                            <td className="px-4 py-3 text-sm">
-                                                {isEditing ? (
-                                                    <input
-                                                        type="text"
-                                                        value={currentItem['Customer Name'] || ''}
-                                                        onChange={(e) => handleFieldChange('Customer Name', e.target.value)}
-                                                        disabled={saveStatus === 'saving'}
-                                                        className="w-32 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                                                    />
-                                                ) : (
-                                                    <span className="text-gray-900">{record['Customer Name'] || '—'}</span>
-                                                )}
-                                            </td>
-
-                                            {/* Vehicle Number */}
-                                            <td className="px-4 py-3 text-sm">
-                                                {isEditing ? (
-                                                    <input
-                                                        type="text"
-                                                        value={currentItem['Car Number'] || currentItem['Vehicle Number'] || ''}
-                                                        onChange={(e) => handleFieldChange('Car Number', e.target.value)}
-                                                        disabled={saveStatus === 'saving'}
-                                                        className="w-28 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                                                    />
-                                                ) : (
-                                                    <span className="text-gray-900">{record['Car Number'] || record['Vehicle Number'] || '—'}</span>
-                                                )}
-                                            </td>
-
-                                            {/* Description */}
-                                            <td className="px-4 py-3 text-sm">
-                                                {isEditing ? (
-                                                    <input
-                                                        type="text"
-                                                        value={currentItem['Description'] || ''}
-                                                        onChange={(e) => handleFieldChange('Description', e.target.value)}
-                                                        disabled={saveStatus === 'saving'}
-                                                        className="w-40 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                                                    />
-                                                ) : (
-                                                    <span className="text-gray-900 max-w-xs truncate block" title={record['Description']}>
-                                                        {record['Description'] || '—'}
-                                                    </span>
-                                                )}
-                                            </td>
-
-                                            {/* Type */}
-                                            <td className="px-4 py-3 text-sm">
-                                                {isEditing ? (
-                                                    <input
-                                                        type="text"
-                                                        value={currentItem['Type'] || ''}
-                                                        onChange={(e) => handleFieldChange('Type', e.target.value)}
-                                                        disabled={saveStatus === 'saving'}
-                                                        className="w-24 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                                                        placeholder="Type"
-                                                    />
-                                                ) : (
-                                                    <span className="text-gray-900">{record['Type'] || '—'}</span>
-                                                )}
-                                            </td>
-
-                                            {/* Quantity */}
-                                            <td className="px-4 py-3 text-sm">
-                                                {isEditing ? (
-                                                    <div>
-                                                        <input
-                                                            type="number"
-                                                            step="0.1"
-                                                            value={currentItem['Quantity'] || ''}
-                                                            onChange={(e) => handleFieldChange('Quantity', e.target.value)}
-                                                            disabled={saveStatus === 'saving'}
-                                                            className={`w-16 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed ${getFieldError(index, 'Quantity') ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                                                                }`}
-                                                        />
-                                                        {getFieldError(index, 'Quantity') && (
-                                                            <p className="text-xs text-red-600 mt-1">{getFieldError(index, 'Quantity')}</p>
-                                                        )}
+                                                    <div className="flex items-center gap-2">
+                                                        <button
+                                                            onClick={() => handleEdit(record, index)}
+                                                            className="text-blue-600 hover:text-blue-800 transition"
+                                                            title="Edit"
+                                                        >
+                                                            <Edit size={18} />
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDeleteRow(record)}
+                                                            className="text-red-600 hover:text-red-800 transition"
+                                                            title="Delete row"
+                                                        >
+                                                            <Trash2 size={18} />
+                                                        </button>
                                                     </div>
-                                                ) : (
-                                                    <span className="text-gray-900">{record['Quantity'] || '—'}</span>
                                                 )}
-                                            </td>
-
-                                            {/* Rate */}
-                                            <td className="px-4 py-3 text-sm">
-                                                {isEditing ? (
-                                                    <div>
-                                                        <input
-                                                            type="number"
-                                                            step="0.01"
-                                                            value={currentItem['Rate'] || ''}
-                                                            onChange={(e) => handleFieldChange('Rate', e.target.value)}
-                                                            disabled={saveStatus === 'saving'}
-                                                            className={`w-20 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed ${getFieldError(index, 'Rate') ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                                                                }`}
-                                                        />
-                                                        {getFieldError(index, 'Rate') && (
-                                                            <p className="text-xs text-red-600 mt-1">{getFieldError(index, 'Rate')}</p>
-                                                        )}
-                                                    </div>
-                                                ) : (
-                                                    <span className="text-gray-900">{record['Rate'] || '—'}</span>
-                                                )}
-                                            </td>
-
-                                            {/* Amount */}
-                                            <td className="px-4 py-3 text-sm">
-                                                {isEditing ? (
-                                                    <div>
-                                                        <input
-                                                            type="number"
-                                                            step="0.01"
-                                                            value={currentItem['Amount'] || ''}
-                                                            onChange={(e) => handleFieldChange('Amount', e.target.value)}
-                                                            disabled={saveStatus === 'saving'}
-                                                            className={`w-24 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed ${getFieldError(index, 'Amount') ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                                                                }`}
-                                                        />
-                                                        {getFieldError(index, 'Amount') && (
-                                                            <p className="text-xs text-red-600 mt-1">{getFieldError(index, 'Amount')}</p>
-                                                        )}
-                                                    </div>
-                                                ) : (
-                                                    <span className="text-gray-900">{record['Amount'] || '—'}</span>
-                                                )}
-                                            </td>
-
-                                            {/* Receipt Link */}
-                                            <td className="px-4 py-3 text-sm">
-                                                {record['Receipt Link'] && (
-                                                    <a
-                                                        href={record['Receipt Link']}
-                                                        target="_blank"
-                                                        rel="noopener noreferrer"
-                                                        className="text-blue-600 hover:text-blue-800 inline-flex items-center"
-                                                    >
-                                                        <ExternalLink size={16} />
-                                                    </a>
-                                                )}
-                                            </td>
-
-                                            {/* Upload Date */}
-                                            <td className="px-4 py-3 text-sm text-gray-600">
-                                                {record['Upload Date']
-                                                    ? new Date(record['Upload Date']).toLocaleString('en-IN', {
-                                                        year: 'numeric',
-                                                        month: 'short',
-                                                        day: 'numeric',
-                                                        hour: '2-digit',
-                                                        minute: '2-digit'
-                                                    })
-                                                    : '—'}
-                                            </td>
-
-                                            {/* Delete */}
-                                            <td className="px-4 py-3 text-sm">
-                                                <button
-                                                    onClick={() => handleDeleteRow(record)}
-                                                    className="text-red-600 hover:text-red-800 transition"
-                                                    title="Delete row"
-                                                >
-                                                    <Trash2 size={18} />
-                                                </button>
                                             </td>
                                         </tr>
                                     );
@@ -842,6 +918,24 @@ const VerifiedInvoicesPage: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            {/* Delete Confirmation Modal */}
+            <DeleteConfirmModal
+                isOpen={deleteConfirmOpen}
+                onClose={() => {
+                    setDeleteConfirmOpen(false);
+                    setRecordToDelete(null);
+                }}
+                onConfirm={confirmDelete}
+                title={deleteType === 'single' ? 'Delete This Record?' : 'Delete Selected Records?'}
+                message={
+                    deleteType === 'single'
+                        ? 'Are you sure you want to delete this record? This data will be permanently removed from your system.'
+                        : `You are about to delete ${selectedIds.size} records. This data will be permanently removed from your system.`
+                }
+                itemCount={deleteType === 'bulk' ? selectedIds.size : undefined}
+                isDeleting={deleteRowMutation.isPending || bulkDeleteMutation.isPending}
+            />
         </div>
     );
 };

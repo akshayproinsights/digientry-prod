@@ -43,7 +43,7 @@ const Layout: React.FC = () => {
             isSection: true,
             children: [
                 { name: 'Add Sales Bills', path: '/sales/upload', icon: Upload },
-                { name: 'Check Pending Sales', path: '/sales/review', icon: ClipboardCheck },
+                { name: 'Review Sales', path: '/sales/review', icon: ClipboardCheck },
                 { name: 'All Past Sales', path: '/sales/verified', icon: CheckCircle },
             ]
         },
@@ -81,7 +81,7 @@ const Layout: React.FC = () => {
             return `${greeting}, ${user?.username || 'User'}`;
         }
 
-        // Special case: Check Pending Sales - hide Layout header completely
+        // Special case: Review Sales - hide Layout header completely
         if (path === '/sales/review') {
             return '';
         }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
-import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2 } from 'lucide-react';
+import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2, CheckSquare, Square } from 'lucide-react';
+import DeleteConfirmModal from '../components/DeleteConfirmModal';
 import {
     getStockLevels,
     getStockSummary,
@@ -10,6 +11,8 @@ import {
     getStockHistory,
     updateStockTransaction,
     deleteStockTransaction,
+    deleteStockItem,
+    deleteBulkStockItems,
     type StockLevel,
     type StockSummary,
     type StockTransaction,
@@ -224,6 +227,12 @@ const CurrentStockPage: React.FC = () => {
     const [localCustomerItems, setLocalCustomerItems] = useState<{ [key: number]: string }>({});
     const [isMappingInProgress, setIsMappingInProgress] = useState(false); // Lock to prevent re-sort during mapping;
 
+    // Selection and delete state
+    const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+    const [isSelectAllChecked, setIsSelectAllChecked] = useState(false);
+    const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+    const [itemToDelete, setItemToDelete] = useState<StockLevel | null>(null);
+
     const searchTimeoutRef = useRef<{ [key: number]: number }>({});
     const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -245,10 +254,21 @@ const CurrentStockPage: React.FC = () => {
         };
     }, []);
 
-    // Set header actions (Upload and Export buttons)
+    // Set header actions (Upload, Export, and Bulk Delete buttons)
     useEffect(() => {
         setHeaderActions(
             <div className="flex gap-2">
+                {/* Bulk Delete Button - shown when items selected */}
+                {selectedIds.size > 0 && (
+                    <button
+                        onClick={handleBulkDelete}
+                        className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                    >
+                        <Trash2 size={16} />
+                        Delete Selected ({selectedIds.size})
+                    </button>
+                )}
+
                 {/* Upload Mapping Sheet Button */}
                 <label
                     htmlFor="mapping-sheet-upload"
@@ -280,7 +300,7 @@ const CurrentStockPage: React.FC = () => {
         );
 
         return () => setHeaderActions(null);
-    }, [isUploading, uploadProgress, setHeaderActions]);
+    }, [isUploading, uploadProgress, selectedIds, setHeaderActions]);
 
     // Load data
     const loadData = useCallback(async () => {
@@ -731,6 +751,74 @@ const CurrentStockPage: React.FC = () => {
         }
     };
 
+    // Handle checkbox selection
+    const handleSelectRow = (rowId: number) => {
+        const newSelected = new Set(selectedIds);
+        if (newSelected.has(rowId)) {
+            newSelected.delete(rowId);
+        } else {
+            newSelected.add(rowId);
+        }
+        setSelectedIds(newSelected);
+        setIsSelectAllChecked(newSelected.size === stockItems.length && stockItems.length > 0);
+    };
+
+    // Handle select all checkbox
+    const handleSelectAll = () => {
+        if (isSelectAllChecked) {
+            setSelectedIds(new Set());
+            setIsSelectAllChecked(false);
+        } else {
+            const allIds = new Set(stockItems.map((item: StockLevel) => item.id));
+            setSelectedIds(allIds);
+            setIsSelectAllChecked(true);
+        }
+    };
+
+    // Handle delete button click
+    const handleDeleteStock = (item: StockLevel) => {
+        setItemToDelete(item);
+        setDeleteConfirmOpen(true);
+    };
+
+    // Bulk delete handler
+    const handleBulkDelete = () => {
+        setItemToDelete(null); // null means bulk delete
+        setDeleteConfirmOpen(true);
+    };
+
+    // Confirm delete
+    const confirmDelete = async () => {
+        try {
+            if (itemToDelete) {
+                // Single delete
+                await deleteStockItem(itemToDelete.part_number);
+
+                // Clear selection if item was selected
+                if (selectedIds.has(itemToDelete.id)) {
+                    const newSelected = new Set(selectedIds);
+                    newSelected.delete(itemToDelete.id);
+                    setSelectedIds(newSelected);
+                }
+            } else {
+                // Bulk delete
+                const selectedItems = stockItems.filter(item => selectedIds.has(item.id));
+                const partNumbers = selectedItems.map(item => item.part_number);
+                await deleteBulkStockItems(partNumbers);
+                setSelectedIds(new Set());
+                setIsSelectAllChecked(false);
+            }
+
+            // Close modal and reload data
+            setDeleteConfirmOpen(false);
+            setItemToDelete(null);
+            await loadData();
+        } catch (error) {
+            console.error('Error deleting stock item:', error);
+            alert('Failed to delete item. Please try again.');
+        }
+    };
+
     // Status badge
     const getStatusBadge = (status: string) => {
         const colors = {
@@ -908,6 +996,16 @@ const CurrentStockPage: React.FC = () => {
                         <table className="w-full table-auto">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
+                                    {/* Checkbox Column */}
+                                    <th className="px-4 py-3 text-left w-12">
+                                        <button
+                                            onClick={handleSelectAll}
+                                            className="text-gray-600 hover:text-gray-900 transition cursor-pointer p-1"
+                                            title={isSelectAllChecked ? "Deselect all" : "Select all"}
+                                        >
+                                            {isSelectAllChecked ? <CheckSquare size={18} /> : <Square size={18} />}
+                                        </button>
+                                    </th>
                                     {/* Col 1: Item Details (Combined Internal Item Name + Part Number) - Flexible with min-width */}
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase min-w-56">
                                         Item Details
@@ -976,6 +1074,16 @@ const CurrentStockPage: React.FC = () => {
                                                 key={item.id}
                                                 className="bg-white hover:bg-gray-50 transition-colors"
                                             >
+                                                {/* Checkbox Column */}
+                                                <td className="px-4 py-3">
+                                                    <button
+                                                        onClick={() => handleSelectRow(item.id)}
+                                                        className="text-gray-600 hover:text-gray-900 transition cursor-pointer p-1"
+                                                    >
+                                                        {selectedIds.has(item.id) ? <CheckSquare size={18} /> : <Square size={18} />}
+                                                    </button>
+                                                </td>
+
                                                 {/* Col 1: Item Details (Combined Internal Item Name + Part Number) - Two-line layout */}
                                                 <td className="px-4 py-3">
                                                     <div className="flex flex-col gap-1">
@@ -1192,17 +1300,15 @@ const CurrentStockPage: React.FC = () => {
                                                     </button>
                                                 </td>
 
-                                                {/* Col 12: Delete Mapping - Only show if mapped */}
+                                                {/* Col 12: Delete Stock Item - Show for ALL rows */}
                                                 <td className="px-2 py-2 text-sm text-center">
-                                                    {item.customer_items ? (
-                                                        <button
-                                                            onClick={() => handleDeleteMapping(item)}
-                                                            className="text-red-600 hover:text-red-800 disabled:opacity-50"
-                                                            title="Delete mapping"
-                                                        >
-                                                            <Trash2 size={16} />
-                                                        </button>
-                                                    ) : null}
+                                                    <button
+                                                        onClick={() => handleDeleteStock(item)}
+                                                        className="text-red-600 hover:text-red-800 disabled:opacity-50"
+                                                        title="Delete this stock item"
+                                                    >
+                                                        <Trash2 size={16} />
+                                                    </button>
                                                 </td>
                                             </tr>
                                         );
@@ -1240,6 +1346,16 @@ const CurrentStockPage: React.FC = () => {
                     }}
                 />
             )}
+
+            {/* Delete Confirmation Modal */}
+            <DeleteConfirmModal
+                isOpen={deleteConfirmOpen}
+                onClose={() => setDeleteConfirmOpen(false)}
+                onConfirm={confirmDelete}
+                title="Delete Stock Item"
+                message="This item will be permanently removed from your stock register."
+                isDeleting={false}
+            />
 
             {/* Floating Recalculate Button - Bottom Right */}
             <button
@@ -1707,6 +1823,7 @@ const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = ({ partN
             </div>
         </div>
     );
-};
+}
+    ;
 
 export default CurrentStockPage;
