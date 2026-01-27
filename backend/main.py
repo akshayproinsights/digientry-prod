@@ -2,6 +2,7 @@
 Main FastAPI application.
 Handles routing, middleware, and application lifecycle.
 """
+# Initial deployment trigger
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
