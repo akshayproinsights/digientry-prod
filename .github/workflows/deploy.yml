@@ -2,28 +2,30 @@ name: Hybrid Deployment
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
 
 jobs:
+  # JOB 1: DEPLOY BACKEND (Cloud Run)
   deploy-backend:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (contains(github.event.head_commit.modified, 'backend/') || contains(github.event.head_commit.added, 'backend/') || contains(github.event.head_commit.removed, 'backend/'))
+    # Only run if files in 'backend' folder changed
+    if: contains(github.event.head_commit.modified, 'backend/') || contains(github.event.head_commit.added, 'backend/')
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Authenticate with Google Cloud
+      # 1. Log in to Google Cloud using your new Key
+      - name: Google Auth
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
+      # 2. Deploy to Cloud Run
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: digientry-backend
-          region: us-central1
           source: ./backend
+          region: us-central1
           env_vars: |
             SUPABASE_URL=${{ secrets.SUPABASE_URL }}
             SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
@@ -31,30 +33,22 @@ jobs:
             R2_ACCESS_KEY_ID=${{ secrets.R2_ACCESS_KEY_ID }}
             R2_SECRET_ACCESS_KEY=${{ secrets.R2_SECRET_ACCESS_KEY }}
 
+  # JOB 2: DEPLOY FRONTEND (Firebase)
   deploy-frontend:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (contains(github.event.head_commit.modified, 'frontend/') || contains(github.event.head_commit.added, 'frontend/') || contains(github.event.head_commit.removed, 'frontend/'))
+    # Only run if files in 'frontend' folder changed
+    if: contains(github.event.head_commit.modified, 'frontend/') || contains(github.event.head_commit.added, 'frontend/')
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Dependencies
+      - uses: actions/checkout@v4
+      
+      - name: Install & Build React
+        run: npm ci && npm run build
         working-directory: ./frontend
-        run: npm ci
-
-      - name: Build Frontend
-        working-directory: ./frontend
-        run: npm run build
-
-      - name: Deploy to Firebase Hosting
+        
+      - name: Deploy to Firebase
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
-          repoToken: '${{ secrets.GITHUB_TOKEN }}'
-          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_DIGIENTRY_PROD }}'
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.GCP_SA_KEY }}
           channelId: live
           projectId: digientry-prod
