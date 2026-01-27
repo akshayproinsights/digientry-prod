@@ -69,10 +69,15 @@ jobs:
         run: npm install && npm run build
         working-directory: ./frontend
         
-      - name: Deploy to Firebase
-        uses: FirebaseExtended/action-hosting-deploy@v0
-        with:
-          repoToken: ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.GCP_SA_KEY }}
-          channelId: live
-          projectId: digientry-prod
+      - name: Deploy to Firebase Hosting
+        env:
+          # Use the Service Account Key from secrets for authentication
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-key.json
+          PROJECT_ID: digientry-prod
+        run: |
+          # Write the secret key to a file
+          echo '${{ secrets.GCP_SA_KEY }}' > "$GOOGLE_APPLICATION_CREDENTIALS"
+          
+          # Deploy using firebase-tools CLI directly involved in project dependencies? 
+          # Or better: use npx to run the latest version to avoid version mismatches
+          npx firebase-tools@latest deploy --only hosting --project "$PROJECT_ID" --debug
