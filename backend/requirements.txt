@@ -47,3 +47,7 @@ reportlab==4.0.9
 
 # String Matching
 rapidfuzz==3.6.1
+
+# Database Client
+supabase==2.3.4
+httpx==0.26.0
