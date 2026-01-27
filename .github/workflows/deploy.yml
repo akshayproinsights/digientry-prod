@@ -58,8 +58,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      # FIX: Changed 'npm ci' to 'npm install' to prevent crashes
       - name: Install & Build React
-        run: npm ci && npm run build
+        run: npm install && npm run build
         working-directory: ./frontend
         
       - name: Deploy to Firebase
