@@ -68,8 +68,15 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],  # Allow browser to read this header for file downloads
 )
 
-# Import routers
-from routes import auth, upload, invoices, review, verified, config_api, inventory, inventory_mapping, vendor_mapping_routes, stock_routes, stock_mapping_upload_routes, dashboard_routes, purchase_order_routes
+# Startup Error Handling
+try:
+    # Import routers
+    from routes import auth, upload, invoices, review, verified, config_api, inventory, inventory_mapping, vendor_mapping_routes, stock_routes, stock_mapping_upload_routes, dashboard_routes, purchase_order_routes
+except Exception as e:
+    import traceback
+    print("CRITICAL STARTUP ERROR: Failed to import routers", flush=True)
+    traceback.print_exc()
+    raise e
 
 # Register routers
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
