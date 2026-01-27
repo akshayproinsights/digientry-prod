@@ -41,3 +41,9 @@ python-dotenv==1.0.0
 
 # Optional: PostgreSQL if needed later
 # psycopg2-binary==2.9.9
+
+# PDF Generation
+reportlab==4.0.9
+
+# String Matching
+rapidfuzz==3.6.1
