@@ -5,21 +5,38 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # JOB 1: DEPLOY BACKEND (Cloud Run)
-  deploy-backend:
+  # JOB 1: The "Traffic Controller" (Detects changes reliably)
+  detect-changes:
     runs-on: ubuntu-latest
-    # Only run if files in 'backend' folder changed
-    if: contains(github.event.head_commit.modified, 'backend/') || contains(github.event.head_commit.added, 'backend/')
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
     steps:
       - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+            frontend:
+              - 'frontend/**'
 
-      # 1. Log in to Google Cloud using your new Key
+  # JOB 2: DEPLOY BACKEND (Only runs if Traffic Controller says "Yes")
+  deploy-backend:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      # Log in to Google Cloud
       - name: Google Auth
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      # 2. Deploy to Cloud Run
+      # Deploy to Cloud Run
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2
         with:
@@ -33,11 +50,11 @@ jobs:
             R2_ACCESS_KEY_ID=${{ secrets.R2_ACCESS_KEY_ID }}
             R2_SECRET_ACCESS_KEY=${{ secrets.R2_SECRET_ACCESS_KEY }}
 
-  # JOB 2: DEPLOY FRONTEND (Firebase)
+  # JOB 3: DEPLOY FRONTEND (Only runs if Traffic Controller says "Yes")
   deploy-frontend:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.frontend == 'true' }}
     runs-on: ubuntu-latest
-    # Only run if files in 'frontend' folder changed
-    if: contains(github.event.head_commit.modified, 'frontend/') || contains(github.event.head_commit.added, 'frontend/')
     steps:
       - uses: actions/checkout@v4
       
