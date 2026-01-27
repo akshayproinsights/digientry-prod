@@ -58,6 +58,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      # Log in to Google Cloud
+      - name: Google Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      
       # FIX: Changed 'npm ci' to 'npm install' to prevent crashes
       - name: Install & Build React
         run: npm install && npm run build
