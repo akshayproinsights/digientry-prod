@@ -50,10 +50,10 @@ jobs:
             R2_ACCESS_KEY_ID=${{ secrets.R2_ACCESS_KEY_ID }}
             R2_SECRET_ACCESS_KEY=${{ secrets.R2_SECRET_ACCESS_KEY }}
 
-  # JOB 3: DEPLOY FRONTEND (Only runs if Traffic Controller says "Yes")
+  # JOB 3: DEPLOY FRONTEND (Run AFTER Backend to ensure Service exists)
   deploy-frontend:
-    needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.frontend == 'true' }}
+    needs: [detect-changes, deploy-backend]
+    if: ${{ always() && needs.detect-changes.outputs.frontend == 'true' && (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,6 +63,12 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # Verify Cloud Run Service Exists (Debugging 404 error)
+      - name: Verify Cloud Run Service
+        run: |
+          echo "Checking if Cloud Run service 'digientry-backend' exists..."
+          gcloud run services describe digientry-backend --region us-central1 --format "value(status.url)" || echo "::warning::Service 'digientry-backend' not found or not accessible!"
       
       # FIX: Changed 'npm ci' to 'npm install' to prevent crashes
       - name: Install & Build React
