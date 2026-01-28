@@ -521,25 +521,41 @@ async def sync_and_finish_stream(
         try:
             logger.info(f"SSE Sync & Finish triggered for user: {username}")
             
-            # Track progress events to yield
-            progress_events = []
+            # Create async queue for real-time progress streaming
+            progress_queue = asyncio.Queue()
             
-            # Progress callback to collect events
+            # Progress callback to enqueue events immediately
             async def progress_callback(stage: str, percentage: int, message: str):
                 event_data = {
                     "stage": stage,
                     "percentage": percentage,
                     "message": message
                 }
-                progress_events.append(event_data)
+                await progress_queue.put(event_data)
+                logger.info(f"Progress update: {stage} ({percentage}%) - {message}")
             
-            # Execute sync with progress tracking
-            results = await run_sync_verified_logic_supabase(username, progress_callback=progress_callback)
+            # Create task for sync execution
+            sync_task = asyncio.create_task(
+                run_sync_verified_logic_supabase(username, progress_callback=progress_callback)
+            )
             
-            # Yield all collected events
-            for event in progress_events:
+            # Stream events as they arrive
+            while not sync_task.done():
+                try:
+                    # Wait for next event with timeout
+                    event = await asyncio.wait_for(progress_queue.get(), timeout=0.1)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    # No event ready, continue waiting
+                    continue
+            
+            # Drain any remaining events from queue
+            while not progress_queue.empty():
+                event = await progress_queue.get()
                 yield f"data: {json.dumps(event)}\n\n"
-                await asyncio.sleep(0.01)
+            
+            # Get sync results
+            results = await sync_task
             
             # Send completion event
             completion_data = {

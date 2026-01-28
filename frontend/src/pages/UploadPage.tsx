@@ -596,7 +596,7 @@ const UploadPage: React.FC = () => {
                         intervalRef.current = null;
                         setPollingInterval(null);
                         finishProcessing(status);  // Pass latest status directly
-                        localStorage.removeItem('activeUploadTaskId');  // Clear session
+                        localStorage.removeItem('activeSalesTaskId');  // Clear session
                     }
                 }, 1000);
 
@@ -641,7 +641,7 @@ const UploadPage: React.FC = () => {
             }
 
             // Backend has valid status - preserve ALL data and just update status + message
-            setProcessingStatus({
+            const completionData = {
                 ...statusToUse,
                 status: 'completed',
                 message: summaryMessage,
@@ -650,10 +650,22 @@ const UploadPage: React.FC = () => {
                     replaced: replacedCount,
                     newFiles: newCount
                 }
+            };
+
+            setProcessingStatus(completionData);
+
+            // Save completion status for when user returns
+            localStorage.setItem('salesCompletionStatus', JSON.stringify(completionData));
+
+            // Update global status with completion badge
+            setSalesStatus({
+                isUploading: false,
+                processingCount: 0,
+                reviewCount: 0,
+                syncCount: totalProcessed,
+                isComplete: true
             });
-
         }
-
 
         setIsProcessing(false);
         // DON'T clear files here - keep them visible so user can see completion state
@@ -664,7 +676,7 @@ const UploadPage: React.FC = () => {
         setFilesToForceUpload([]);
 
         // Clear localStorage task
-        localStorage.removeItem('activeUploadTaskId');
+        localStorage.removeItem('activeSalesTaskId');
 
         queryClient.invalidateQueries({ queryKey: ['invoices'] });
         queryClient.invalidateQueries({ queryKey: ['review'] });
@@ -1008,7 +1020,7 @@ const UploadPage: React.FC = () => {
                                             onClick={() => {
                                                 setFiles([]);
                                                 setProcessingStatus(null);
-                                                localStorage.removeItem('uploadCompletionStatus');
+                                                localStorage.removeItem('salesCompletionStatus');
                                                 navigate('/sales/review');
                                             }}
                                             className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 px-4 rounded-lg transition flex items-center justify-center gap-2 shadow-sm"
@@ -1020,7 +1032,7 @@ const UploadPage: React.FC = () => {
                                             onClick={() => {
                                                 setFiles([]);
                                                 setProcessingStatus(null);
-                                                localStorage.removeItem('uploadCompletionStatus');
+                                                localStorage.removeItem('salesCompletionStatus');
                                             }}
                                             className="w-full mt-2 bg-white hover:bg-gray-50 text-gray-700 font-medium py-2 px-4 rounded-lg transition border border-gray-300 text-sm"
                                         >
