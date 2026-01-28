@@ -49,4 +49,4 @@ htmlcov/
 Thumbs.db
 
 credentials.json
-secrets.toml
+# secrets.toml
