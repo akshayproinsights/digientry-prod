@@ -50,6 +50,7 @@ jobs:
             R2_ACCESS_KEY_ID=${{ secrets.R2_ACCESS_KEY_ID }}
             R2_SECRET_ACCESS_KEY=${{ secrets.R2_SECRET_ACCESS_KEY }}
             GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
+            USERS_CONFIG_JSON=${{ secrets.USERS_CONFIG_JSON }}
           flags: '--allow-unauthenticated'
 
   # JOB 3: DEPLOY FRONTEND (Run AFTER Backend to ensure Service exists)
