@@ -130,6 +130,14 @@ export const dashboardAPI = {
     },
 
     /**
+     * Get raw stock levels list
+     */
+    getStockLevels: async (): Promise<{ success: boolean; items: any[]; count: number }> => {
+        const response = await apiClient.get('/api/stock/levels');
+        return response.data;
+    },
+
+    /**
      * Get all KPIs with period comparisons
      */
     getKPIs: async (

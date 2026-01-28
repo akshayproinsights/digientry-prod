@@ -31,7 +31,8 @@ class VendorMappingEntry(BaseModel):
     vendor_description: str
     part_number: Optional[str] = None
     customer_item_name: Optional[str] = None
-    stock: Optional[float] = None
+    stock: Optional[float] = None  # Kept for backward compat/old usage if any
+    priority: Optional[str] = None
     reorder: Optional[float] = None
     notes: Optional[str] = None
     status: str = "Pending"
@@ -40,10 +41,11 @@ class VendorMappingEntry(BaseModel):
 class UpdateEntryRequest(BaseModel):
     """Request model for updating an entry"""
     stock: Optional[float] = None
+    priority: Optional[str] = None
     reorder: Optional[float] = None
     notes: Optional[str] = None
     status: Optional[str] = None
-
+    customer_item_name: Optional[str] = None
 
 class BulkSaveRequest(BaseModel):
     """Request model for bulk saving entries"""
@@ -381,12 +383,16 @@ async def update_entry(
         
         if request.stock is not None:
             update_data["stock"] = request.stock
+        if request.priority is not None:
+            update_data["priority"] = request.priority
         if request.reorder is not None:
-            update_data["reorder"] = request.reorder
+            update_data["reorder_point"] = request.reorder # Map to reorder_point
         if request.notes is not None:
             update_data["notes"] = request.notes
         if request.status is not None:
             update_data["status"] = request.status
+        if request.customer_item_name is not None:
+            update_data["customer_item_name"] = request.customer_item_name
         
         response = db.client.table("vendor_mapping_entries").update(
             update_data
@@ -433,7 +439,8 @@ async def bulk_save_entries(
                     "part_number": entry.part_number,
                     "customer_item_name": entry.customer_item_name,
                     "stock": entry.stock,
-                    "reorder": entry.reorder,
+                    "priority": entry.priority,
+                    "reorder_point": entry.reorder, # Map 'reorder' to 'reorder_point' DB column
                     "notes": entry.notes,
                     "status": determined_status,
                     "source_image_url": request.source_image_url,

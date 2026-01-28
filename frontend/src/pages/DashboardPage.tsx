@@ -95,12 +95,7 @@ const DashboardPage: React.FC = () => {
     const { data: stockLevels } = useQuery({
         queryKey: ['stockLevels'],
         queryFn: async () => {
-            const response = await fetch(`${import.meta.env.VITE_API_URL}/api/stock/levels`, {
-                headers: {
-                    'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
-                },
-            });
-            return response.json();
+            return await dashboardAPI.getStockLevels();
         },
         staleTime: 30000,
     });
