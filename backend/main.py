@@ -4,7 +4,7 @@ Handles routing, middleware, and application lifecycle.
 """
 print("DigiEntry Backend is starting.....")
 # Final check done yep done yes
-# Initial deployment trigger
+# Initial deployment trigger done
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
