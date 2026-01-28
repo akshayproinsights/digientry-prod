@@ -477,13 +477,24 @@ async def get_file_url(
     """
     Get permanent public URL for a file from R2 storage
     """
+    from urllib.parse import unquote
+    
     try:
+        # Explicitly unquote the file_key to handle %2F correctly
+        decoded_key = unquote(file_key)
+        
         storage = get_storage_client()
         
+        # Check if file exists first (optional but good for debugging)
+        # if not storage.file_exists(r2_bucket, decoded_key):
+        #    raise HTTPException(status_code=404, detail="File not found")
+        
         # Generate permanent public URL
-        url = storage.get_public_url(r2_bucket, file_key)
+        url = storage.get_public_url(r2_bucket, decoded_key)
         
         if not url:
+            # Fallback to r2:// path if public URL not configured, but this won't work in browser
+            logger.warning(f"Public URL not configured for {decoded_key}")
             raise HTTPException(status_code=500, detail="Public URL not configured for R2 bucket")
         
         return {"url": url}
@@ -491,4 +502,4 @@ async def get_file_url(
         raise
     except Exception as e:
         logger.error(f"Failed to generate public URL for {file_key}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate file URL")
+        raise HTTPException(status_code=500, detail=f"Failed to generate file URL: {str(e)}")
