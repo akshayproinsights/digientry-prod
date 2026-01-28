@@ -45,46 +45,60 @@ const UploadPage: React.FC = () => {
         // Clear completion badge if visiting this page
         setSalesStatus({ isComplete: false });
 
-        // First check if there's a saved completion status
-        const savedCompletion = localStorage.getItem('salesCompletionStatus');
-        if (savedCompletion) {
-            try {
-                const completionData = JSON.parse(savedCompletion);
-                setProcessingStatus(completionData);
-                setIsProcessing(false); // ✓ Not processing anymore - completed
-                setIsUploading(false);
-                setFiles([]); // ✓ Clear files since we're done
+        let interval: any = null;
 
-                // RESTORE GLOBAL STATUS
-                const processed = completionData.progress?.processed || 0;
-                setSalesStatus({
-                    isUploading: false,
-                    processingCount: 0,
-                    reviewCount: 0,
-                    syncCount: processed,
-                    isComplete: true // Show green tick
-                });
-
-
-                return; // Don't poll if already completed
-            } catch (e) {
-                console.error('Error parsing sales completion:', e);
-                localStorage.removeItem('salesCompletionStatus');
-            }
-        }
-
-        const activeTaskId = localStorage.getItem('activeSalesTaskId');
-        if (activeTaskId) {
-            // CRITICAL: Set processing state IMMEDIATELY before async call
-            setIsProcessing(true);
-            setIsUploading(false);
-
-            setSalesStatus({ isUploading: false, processingCount: 1, totalProcessing: 1, reviewCount: 0, syncCount: 0, isComplete: false });
-
-            // Start continuous polling
-            const interval = setInterval(async () => {
+        const checkStatus = () => {
+            // First check if there's a saved completion status
+            const savedCompletion = localStorage.getItem('salesCompletionStatus');
+            if (savedCompletion && !isProcessing && !isUploading) { // Only load if we are idle
                 try {
-                    const statusData = await salesAPI.getProcessStatus(activeTaskId);
+                    const completionData = JSON.parse(savedCompletion);
+                    // Avoid reloading same status repeatedly
+                    if (JSON.stringify(processingStatus) !== JSON.stringify(completionData)) {
+                        console.log('🔄 [DEBUG] Found completion status in background, loading...');
+                        setProcessingStatus(completionData);
+                        setIsProcessing(false);
+                        setIsUploading(false);
+                        setFiles([]);
+
+                        const processed = completionData.progress?.processed || 0;
+                        setSalesStatus({
+                            isUploading: false,
+                            processingCount: 0,
+                            reviewCount: 0,
+                            syncCount: processed,
+                            isComplete: true
+                        });
+
+                        // Stop polling if we found completion
+                        if (interval) clearInterval(interval);
+                        return true; // Signal handled
+                    }
+                } catch (e) {
+                    console.error('Error parsing sales completion:', e);
+                    localStorage.removeItem('salesCompletionStatus');
+                }
+            }
+
+            const activeTaskId = localStorage.getItem('activeSalesTaskId');
+            if (activeTaskId && !isProcessing && !intervalRef.current) { // Only start if not already processing
+                // CRITICAL: Set processing state IMMEDIATELY/RESUME
+                console.log('🔄 [DEBUG] Found active task ID in background, resuming...');
+                setIsProcessing(true);
+                setIsUploading(false);
+                setSalesStatus({ isUploading: false, processingCount: 1, totalProcessing: 1, reviewCount: 0, syncCount: 0, isComplete: false });
+
+                startPolling(activeTaskId);
+                return true;
+            }
+            return false;
+        };
+
+        const startPolling = (taskId: string) => {
+            // Start continuous polling
+            interval = setInterval(async () => {
+                try {
+                    const statusData = await salesAPI.getProcessStatus(taskId);
 
                     // UPDATE GLOBAL STATUS
                     const total = statusData.progress?.total || 0;
@@ -167,6 +181,24 @@ const UploadPage: React.FC = () => {
 
             intervalRef.current = interval;
             setPollingInterval(interval);
+        };
+
+        // Initial check
+        if (!checkStatus()) {
+            // If initially idle, set up an idle poller to watch for background updates
+            // specific to when user navigates away and comes back "too early"
+            const idleWatcher = setInterval(() => {
+                checkStatus();
+            }, 2000); // Check every 2 seconds
+
+            return () => {
+                clearInterval(idleWatcher);
+                if (intervalRef.current) {
+                    clearInterval(intervalRef.current);
+                    intervalRef.current = null;
+                }
+                setSalesStatus({ isComplete: false });
+            };
         }
 
         // Cleanup on unmount - IMPORTANT: Don't clear session, just stop polling
