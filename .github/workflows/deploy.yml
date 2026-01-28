@@ -73,6 +73,8 @@ jobs:
       
       # FIX: Changed 'npm ci' to 'npm install' to prevent crashes
       - name: Install & Build React
+        env:
+          VITE_API_URL: /
         run: npm install && npm run build
         working-directory: ./frontend
         
