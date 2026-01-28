@@ -85,6 +85,16 @@ def get_supabase_config() -> Optional[Dict[str, str]]:
     # If all env vars present, return them
     if all(env_config.values()):
         return env_config
+        
+    # BACKWARD COMPATIBILITY: Allow SUPABASE_KEY to map to service_role_key
+    # This matches what is defined in deploy.yml
+    supabase_key = os.getenv("SUPABASE_KEY")
+    if supabase_key and env_config["url"]:
+        return {
+            "url": env_config["url"],
+            "anon_key": supabase_key,       # Use same key for anon if missing
+            "service_role_key": supabase_key
+        }
     
     # Fallback to secrets file
     secrets = configs.load_secrets()

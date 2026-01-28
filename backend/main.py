@@ -110,7 +110,7 @@ async def health_check():
     return {"status": "healthy"}
 
 
-@app.get("/db-check")
+@app.get("/api/db-check")
 async def db_check():
     """Check database connection explicitly"""
     try:
