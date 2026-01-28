@@ -305,13 +305,19 @@ const UploadPage: React.FC = () => {
         try {
             console.log('🚀 [DEBUG] Upload & Process STARTED');
             console.log(`📁 [DEBUG] Total files to upload: ${files.length}`);
+
+            // CRITICAL: Clear any old completion status from previous uploads
+            localStorage.removeItem('salesCompletionStatus');
+            setProcessingStatus(null);
+
             setIsUploading(true);
             setSalesStatus({
                 isUploading: true,
                 processingCount: files.length,
                 totalProcessing: files.length,
                 reviewCount: 0,
-                syncCount: 0
+                syncCount: 0,
+                isComplete: false  // Ensure completion badge is cleared
             });
 
             setUploadProgress(0);
