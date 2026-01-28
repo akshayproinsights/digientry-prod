@@ -39,9 +39,35 @@ async def login(credentials: LoginRequest):
     user_config = auth.authenticate_user(credentials.username, credentials.password)
     
     if not user_config:
+        # DEBUG: Reveal why auth failed
+        available_users = list(config.get_users_db().keys())
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail=f"User not found. Available users: {available_users}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    stored_password = user_config.get("password")
+    if not stored_password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No password configured for this user",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Check if password is hashed (starts with known hash prefixes)
+    password_valid = False
+    if stored_password.startswith("$2b$") or stored_password.startswith("$2a$"):
+        # Hashed password
+        password_valid = auth.verify_password(credentials.password, stored_password)
+    else:
+        # Plain text password (current implementation)
+        password_valid = (credentials.password == stored_password)
+        
+    if not password_valid:
+         raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
