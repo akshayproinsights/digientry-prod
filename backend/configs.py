@@ -137,8 +137,22 @@ def get_users_db() -> Dict[str, Dict[str, Any]]:
     Returns a dict of users from environment variables or secrets file:
       { username: { password: str, r2_bucket: str, sheet_id?: str, dashboard_url?: str } }
     """
-    # Check environment variable first (JSON format)
-    users_json = os.getenv("USERS_CONFIG_JSON")
+    import base64
+    
+    # Check Base64 environment variable first (Safe for GitHub Actions)
+    users_b64 = os.getenv("USERS_CONFIG_JSON_BASE64")
+    users_json = None
+    
+    if users_b64:
+        try:
+            users_json = base64.b64decode(users_b64).decode('utf-8')
+        except Exception as e:
+            print(f"Error decoding USERS_CONFIG_JSON_BASE64: {e}")
+
+    # Fallback to raw JSON env var
+    if not users_json:
+        users_json = os.getenv("USERS_CONFIG_JSON")
+
     if users_json:
         try:
             users = json.loads(users_json)
