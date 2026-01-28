@@ -151,19 +151,13 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=500, detail=f"Auth error: {str(e)}")
 
 
-async def get_current_user_sheet_id(current_user: Dict[str, Any] = Depends(get_current_user)) -> str:
+async def get_current_user_sheet_id(current_user: Dict[str, Any] = Depends(get_current_user)) -> Optional[str]:
     """
     Dependency to get the current user's sheet_id.
-    Raises HTTPException if sheet_id is not configured.
+    Returns None if sheet_id is not configured (optional).
     """
     sheet_id = current_user.get("sheet_id")
-    
-    if not sheet_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No sheet_id configured for user"
-        )
-    
+    # Make sheet_id optional - return None if missing instead of 400 error
     return sheet_id
 
 
