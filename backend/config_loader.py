@@ -75,9 +75,15 @@ def load_user_config(username: str, bypass_cache: bool = False) -> Optional[Dict
     
     user_config_path = USER_CONFIGS_DIR / f"{username}.json"
     
+    # CASE SENSITIVITY FIX: Fallback to lowercase if exact match not found
     if not user_config_path.exists():
-        logger.warning(f"User config not found: {username}")
-        return None
+        lowercase_path = USER_CONFIGS_DIR / f"{username.lower()}.json"
+        if lowercase_path.exists():
+            logger.info(f"User config found with lowercase name: {username.lower()}")
+            user_config_path = lowercase_path
+        else:
+            logger.warning(f"User config not found: {username} (checked {user_config_path} and {lowercase_path})")
+            return None
     
     try:
         # Load user config

@@ -193,8 +193,21 @@ def get_gcp_service_account() -> Optional[Dict[str, str]]:
     Returns the google_service_account dictionary for BigQuery/Sheets auth.
     Checks environment variable first, then falls back to secrets file.
     """
-    # Check environment variable first (JSON format)
-    gcp_json = os.getenv("GCP_SERVICE_ACCOUNT_JSON")
+    # Check Base64 environment variable first
+    import base64
+    gcp_b64 = os.getenv("GCP_SERVICE_ACCOUNT_JSON_BASE64")
+    gcp_json = None
+    
+    if gcp_b64:
+        try:
+            gcp_json = base64.b64decode(gcp_b64).decode('utf-8')
+        except Exception as e:
+            print(f"Error decoding GCP_SERVICE_ACCOUNT_JSON_BASE64: {e}")
+
+    # Fallback to raw JSON env var
+    if not gcp_json:
+        gcp_json = os.getenv("GCP_SERVICE_ACCOUNT_JSON")
+
     if gcp_json:
         try:
             gcp_sa = json.loads(gcp_json)

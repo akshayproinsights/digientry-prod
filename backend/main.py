@@ -110,6 +110,36 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/db-check")
+async def db_check():
+    """Check database connection explicitly"""
+    try:
+        from database import get_database_client
+        import os
+        
+        # Check env vars (redacted)
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY")
+        
+        db = get_database_client()
+        # Try a simple query
+        response = db.client.table("users").select("count", count="exact").limit(1).execute()
+        
+        return {
+            "status": "connected",
+            "supabase_url_configured": bool(url),
+            "supabase_key_configured": bool(key),
+            "response": "OK"
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "status": "error",
+            "detail": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+
 @app.on_event("startup")
 async def startup_event():
     """Application startup"""

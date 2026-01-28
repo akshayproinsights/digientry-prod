@@ -40,6 +40,7 @@ jobs:
         id: secrets
         run: |
           echo "users_b64=$(echo -n '${{ secrets.USERS_CONFIG_JSON }}' | base64 -w 0)" >> $GITHUB_OUTPUT
+          echo "gcp_b64=$(echo -n '${{ secrets.GCP_SA_KEY }}' | base64 -w 0)" >> $GITHUB_OUTPUT
 
       # Deploy to Cloud Run
       - name: Deploy to Cloud Run
@@ -57,6 +58,8 @@ jobs:
             GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
             GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
             USERS_CONFIG_JSON_BASE64=${{ steps.secrets.outputs.users_b64 }}
+            GCP_SERVICE_ACCOUNT_JSON_BASE64=${{ steps.secrets.outputs.gcp_b64 }}
+
 
           flags: '--allow-unauthenticated'
 
