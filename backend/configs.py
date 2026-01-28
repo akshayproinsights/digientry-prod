@@ -105,18 +105,26 @@ def get_r2_config() -> Dict[str, str]:
     Keys expected: account_id, endpoint_url, access_key_id, secret_access_key
     """
     # Check environment variables first
-    env_config = {
-        "account_id": os.getenv("CLOUDFLARE_R2_ACCOUNT_ID"),
-        "endpoint_url": os.getenv("CLOUDFLARE_R2_ENDPOINT_URL"),
-        "access_key_id": os.getenv("CLOUDFLARE_R2_ACCESS_KEY_ID"),
-        "secret_access_key": os.getenv("CLOUDFLARE_R2_SECRET_ACCESS_KEY"),
-        "public_base_url": os.getenv("CLOUDFLARE_R2_PUBLIC_BASE_URL")
-    }
+    # Check environment variables first (support both CLOUDFLARE_R2_ and R2_ prefixes)
+    account_id = os.getenv("CLOUDFLARE_R2_ACCOUNT_ID") or os.getenv("R2_ACCOUNT_ID")
+    endpoint_url = os.getenv("CLOUDFLARE_R2_ENDPOINT_URL") or os.getenv("R2_ENDPOINT_URL")
+    access_key_id = os.getenv("CLOUDFLARE_R2_ACCESS_KEY_ID") or os.getenv("R2_ACCESS_KEY_ID")
+    secret_access_key = os.getenv("CLOUDFLARE_R2_SECRET_ACCESS_KEY") or os.getenv("R2_SECRET_ACCESS_KEY")
+    public_base_url = os.getenv("CLOUDFLARE_R2_PUBLIC_BASE_URL") or os.getenv("R2_PUBLIC_BASE_URL")
+
+    # Construct endpoint URL if missing but account_id is present
+    if not endpoint_url and account_id:
+        endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
     
-    # If all required env vars are present, return them
-    if all([env_config.get("account_id"), env_config.get("endpoint_url"), 
-            env_config.get("access_key_id"), env_config.get("secret_access_key")]):
-        return {k: v for k, v in env_config.items() if v is not None}
+    # If all required credentials are present
+    if account_id and endpoint_url and access_key_id and secret_access_key:
+        return {
+            "account_id": account_id,
+            "endpoint_url": endpoint_url,
+            "access_key_id": access_key_id,
+            "secret_access_key": secret_access_key,
+            "public_base_url": public_base_url
+        }
     
     # Fallback to secrets file
     secrets = load_secrets()
