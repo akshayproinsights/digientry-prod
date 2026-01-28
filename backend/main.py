@@ -3,7 +3,7 @@ Main FastAPI application.
 Handles routing, middleware, and application lifecycle.
 """
 print("DigiEntry Backend is starting.....")
-# Final check done yep done yes
+# Final check done yep done yes git
 # Initial deployment trigger done yeah
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
