@@ -143,6 +143,9 @@ def get_users_db() -> Dict[str, Dict[str, Any]]:
         try:
             users = json.loads(users_json)
             if isinstance(users, dict):
+                # Handle case where JSON is wrapped in "users" key (like secrets.toml)
+                if "users" in users and isinstance(users["users"], dict):
+                    return users["users"]
                 return users
         except json.JSONDecodeError:
             pass  # Fall through to secrets file
