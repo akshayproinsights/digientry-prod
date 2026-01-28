@@ -115,6 +115,11 @@ async def upload_files(
     username = current_user.get("username", "user")
     
     try:
+        logger.info(f"========== UPLOAD FILES ENDPOINT CALLED ==========")
+        logger.info(f"User: {username}")
+        logger.info(f"Number of files: {len(files)}")
+        logger.info(f"Filenames: {[f.filename for f in files]}")
+        
         # Prepare arguments for threaded execution
         upload_tasks = []
         loop = asyncio.get_event_loop()
@@ -231,6 +236,15 @@ async def process_invoices_endpoint(
     """
     task_id = str(uuid.uuid4())
     username = current_user.get("username", "user")
+    
+    logger.info(f"========== PROCESS FILES ENDPOINT CALLED ==========")
+    logger.info(f"User: {username}")
+    logger.info(f"Task ID: {task_id}")
+    logger.info(f"Number of files to process: {len(request.file_keys)}")
+    logger.info(f"File keys: {request.file_keys}")
+    logger.info(f"Force upload: {request.force_upload}")
+    logger.info(f"R2 Bucket: {r2_bucket}")
+    logger.info(f"Sheet ID: {sheet_id}")
     
     # Initialize status in DATABASE
     initial_status = {
@@ -385,12 +399,20 @@ def process_invoices_sync(
     print(f"Force upload: {force_upload}", flush=True)
     print(f"{'='*80}\n", flush=True)
     
-    logger.info(f"=== BACKGROUND TASK STARTED ===")
+    logger.info(f"========== BACKGROUND TASK STARTED ==========")
     logger.info(f"Task ID: {task_id}")
-    logger.info(f"Temp files: {file_keys}")
+    logger.info(f"File keys to process: {file_keys}")
     logger.info(f"User: {username}")
     logger.info(f"R2 Bucket: {r2_bucket}")
     logger.info(f"Sheet ID: {sheet_id}")
+    logger.info(f"Force upload: {force_upload}")
+    
+    # Log environment check
+    import os
+    logger.info(f"Environment check:")
+    logger.info(f"  - GOOGLE_API_KEY set: {bool(os.getenv('GOOGLE_API_KEY'))}")
+    logger.info(f"  - R2_ACCOUNT_ID set: {bool(os.getenv('R2_ACCOUNT_ID'))}")
+    logger.info(f"  - SUPABASE_URL set: {bool(os.getenv('SUPABASE_URL'))}")
     
     r2_file_keys = []
     

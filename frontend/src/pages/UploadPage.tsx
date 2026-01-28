@@ -303,6 +303,8 @@ const UploadPage: React.FC = () => {
         if (files.length === 0) return;
 
         try {
+            console.log('🚀 [DEBUG] Upload & Process STARTED');
+            console.log(`📁 [DEBUG] Total files to upload: ${files.length}`);
             setIsUploading(true);
             setSalesStatus({
                 isUploading: true,
@@ -329,6 +331,7 @@ const UploadPage: React.FC = () => {
             for (let i = 0; i < totalFiles; i += BATCH_SIZE) {
                 const batch = files.slice(i, i + BATCH_SIZE);
 
+                console.log(`📤 [DEBUG] Uploading batch ${Math.floor(i / BATCH_SIZE) + 1}, size: ${batch.length}`);
                 const response = await salesAPI.uploadFiles(batch, (progressEvent) => {
                     const batchPercent = progressEvent.loaded / progressEvent.total;
                     const validBatchSize = batch.length;
@@ -336,9 +339,11 @@ const UploadPage: React.FC = () => {
                     const totalProgress = Math.round(((processedCount + currentBatchProgress) / totalFiles) * 100);
                     setUploadProgress(totalProgress);
                 });
+                console.log(`✅ [DEBUG] Batch upload response:`, response);
 
                 if (response.uploaded_files) {
                     fileKeys = [...fileKeys, ...response.uploaded_files];
+                    console.log(`📦 [DEBUG] Accumulated ${fileKeys.length} file keys so far`);
                 }
 
                 processedCount += batch.length;
@@ -360,15 +365,23 @@ const UploadPage: React.FC = () => {
             setUploadProgress(0);
             setEstimatedTimeRemaining(null);
 
+            console.log(`✅ [DEBUG] All files uploaded successfully!`);
+            console.log(`📋 [DEBUG] Total R2 keys: ${fileKeys.length}`, fileKeys);
+
             // Start processing with forceUpload parameter
             setIsProcessing(true);
             setSalesStatus({ isUploading: false, processingCount: fileKeys.length, totalProcessing: fileKeys.length, reviewCount: 0, syncCount: 0 });
 
+            console.log(`🔄 [DEBUG] Starting processing...`);
+            console.log(`🔄 [DEBUG] File keys:`, fileKeys);
+            console.log(`🔄 [DEBUG] Force upload:`, forceUpload);
             const processResponse = await salesAPI.processInvoices(fileKeys, forceUpload);
+            console.log(`✅ [DEBUG] Process API response:`, processResponse);
             setProcessingStatus(processResponse);
 
             // Save taskId to localStorage for persistence
             const taskId = processResponse.task_id;
+            console.log(`💾 [DEBUG] Task ID saved: ${taskId}`);
             localStorage.setItem('activeSalesTaskId', taskId);
             const pollInterval = setInterval(async () => {
                 const status = await salesAPI.getProcessStatus(taskId);
@@ -450,7 +463,12 @@ const UploadPage: React.FC = () => {
             intervalRef.current = pollInterval;
             setPollingInterval(pollInterval);
         } catch (error) {
-            console.error('Error:', error);
+            console.error('❌ [DEBUG] Upload/Process ERROR:', error);
+            console.error('❌ [DEBUG] Error details:', {
+                message: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                response: (error as any)?.response?.data
+            });
             setIsUploading(false);
             setIsProcessing(false);
             setSalesStatus({ isUploading: false, processingCount: 0, reviewCount: 0, syncCount: 0 });
