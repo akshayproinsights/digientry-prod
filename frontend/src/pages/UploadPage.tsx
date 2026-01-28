@@ -42,48 +42,56 @@ const UploadPage: React.FC = () => {
 
     // Resume monitoring on page load if there's an active task
     useEffect(() => {
+        console.log('🔍 [UPLOAD-PAGE] useEffect triggered - checking for active tasks...');
+
         // Clear completion badge if visiting this page
         setSalesStatus({ isComplete: false });
 
         let interval: any = null;
 
         const checkStatus = () => {
+            console.log('🔍 [UPLOAD-PAGE] checkStatus called');
+
             // First check if there's a saved completion status
             const savedCompletion = localStorage.getItem('salesCompletionStatus');
-            if (savedCompletion && !isProcessing && !isUploading) { // Only load if we are idle
+            console.log('🔍 [UPLOAD-PAGE] savedCompletion:', savedCompletion ? 'EXISTS' : 'NULL');
+
+            if (savedCompletion) { // REMOVED CLOSURE BUG: !isProcessing && !isUploading
                 try {
                     const completionData = JSON.parse(savedCompletion);
-                    // Avoid reloading same status repeatedly
-                    if (JSON.stringify(processingStatus) !== JSON.stringify(completionData)) {
-                        console.log('🔄 [DEBUG] Found completion status in background, loading...');
-                        setProcessingStatus(completionData);
-                        setIsProcessing(false);
-                        setIsUploading(false);
-                        setFiles([]);
+                    console.log('✅ [UPLOAD-PAGE] Found completion status, loading:', completionData);
 
-                        const processed = completionData.progress?.processed || 0;
-                        setSalesStatus({
-                            isUploading: false,
-                            processingCount: 0,
-                            reviewCount: 0,
-                            syncCount: processed,
-                            isComplete: true
-                        });
+                    setProcessingStatus(completionData);
+                    setIsProcessing(false);
+                    setIsUploading(false);
+                    setFiles([]);
 
-                        // Stop polling if we found completion
-                        if (interval) clearInterval(interval);
-                        return true; // Signal handled
-                    }
+                    const processed = completionData.progress?.processed || 0;
+                    setSalesStatus({
+                        isUploading: false,
+                        processingCount: 0,
+                        reviewCount: 0,
+                        syncCount: processed,
+                        isComplete: true
+                    });
+
+                    // Stop polling if we found completion
+                    if (interval) clearInterval(interval);
+                    return true; // Signal handled
                 } catch (e) {
-                    console.error('Error parsing sales completion:', e);
+                    console.error('❌ [UPLOAD-PAGE] Error parsing sales completion:', e);
                     localStorage.removeItem('salesCompletionStatus');
                 }
             }
 
             const activeTaskId = localStorage.getItem('activeSalesTaskId');
-            if (activeTaskId && !isProcessing && !intervalRef.current) { // Only start if not already processing
+            console.log('🔍 [UPLOAD-PAGE] activeTaskId:', activeTaskId || 'NULL');
+            console.log('🔍 [UPLOAD-PAGE] intervalRef.current:', intervalRef.current ? 'ACTIVE' : 'NULL');
+
+            if (activeTaskId && !intervalRef.current) { // REMOVED CLOSURE BUG: !isProcessing
+                console.log('🚀 [UPLOAD-PAGE] Found active task, resuming polling:', activeTaskId);
+
                 // CRITICAL: Set processing state IMMEDIATELY/RESUME
-                console.log('🔄 [DEBUG] Found active task ID in background, resuming...');
                 setIsProcessing(true);
                 setIsUploading(false);
                 setSalesStatus({ isUploading: false, processingCount: 1, totalProcessing: 1, reviewCount: 0, syncCount: 0, isComplete: false });
@@ -91,6 +99,8 @@ const UploadPage: React.FC = () => {
                 startPolling(activeTaskId);
                 return true;
             }
+
+            console.log('⏸️ [UPLOAD-PAGE] No active task or completion found');
             return false;
         };
 
@@ -184,14 +194,17 @@ const UploadPage: React.FC = () => {
         };
 
         // Initial check
+        console.log('🎬 [UPLOAD-PAGE] Running initial checkStatus...');
         if (!checkStatus()) {
             // If initially idle, set up an idle poller to watch for background updates
-            // specific to when user navigates away and comes back "too early"
+            console.log('⏰ [UPLOAD-PAGE] Setting up idle watcher (2s interval)');
             const idleWatcher = setInterval(() => {
+                console.log('⏰ [UPLOAD-PAGE] Idle watcher tick...');
                 checkStatus();
             }, 2000); // Check every 2 seconds
 
             return () => {
+                console.log('🧹 [UPLOAD-PAGE] Cleanup - stopping idle watcher');
                 clearInterval(idleWatcher);
                 if (intervalRef.current) {
                     clearInterval(intervalRef.current);

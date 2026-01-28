@@ -173,8 +173,10 @@ export const reviewAPI = {
                 return;
             }
 
-            // Pass token as query parameter since EventSource doesn't support headers
-            const url = `${import.meta.env.VITE_API_URL}/api/review/sync-finish/stream?token=${encodeURIComponent(token)}`;
+            // CRITICAL FIX: Use apiClient.defaults.baseURL instead of import.meta.env.VITE_API_URL
+            // This ensures SSE uses the same base URL as regular API calls (production or local)
+            const baseURL = apiClient.defaults.baseURL || 'http://localhost:8000';
+            const url = `${baseURL}/api/review/sync-finish/stream?token=${encodeURIComponent(token)}`;
             const eventSource = new EventSource(url);
 
             eventSource.onmessage = (event) => {
