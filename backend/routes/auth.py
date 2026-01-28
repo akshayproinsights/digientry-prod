@@ -1,7 +1,7 @@
 """Authentication routes for login and user management"""
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import timedelta
 
 import auth
@@ -27,8 +27,8 @@ class UserResponse(BaseModel):
     """User information response"""
     username: str
     r2_bucket: str
-    sheet_id: str
-    dashboard_url: str = None
+    sheet_id: Optional[str] = None
+    dashboard_url: Optional[str] = None
 
 
 @router.post("/login", response_model=LoginResponse)

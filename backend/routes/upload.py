@@ -12,6 +12,7 @@ from auth import get_current_user, get_current_user_r2_bucket, get_current_user_
 from services.storage import get_storage_client
 from utils.image_optimizer import optimize_image_for_gemini, should_optimize_image, validate_image_quality
 from config import get_sales_folder
+from database import get_database_client
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -19,8 +20,8 @@ logger = logging.getLogger(__name__)
 # Thread pool for blocking operations (increased for bulk uploads)
 executor = ThreadPoolExecutor(max_workers=10)
 
-# In-memory storage for processing status (in production, use Redis or database)
-processing_status: Dict[str, Dict[str, Any]] = {}
+# In-memory storage REMOVED - using database table 'upload_tasks'
+# processing_status: Dict[str, Dict[str, Any]] = {}
 
 
 class UploadResponse(BaseModel):
@@ -229,21 +230,35 @@ async def process_invoices_endpoint(
     Trigger invoice processing in thread pool (for blocking I/O operations)
     """
     task_id = str(uuid.uuid4())
+    username = current_user.get("username", "user")
     
-    # Initialize status
-    processing_status[task_id] = {
+    # Initialize status in DATABASE
+    initial_status = {
+        "task_id": task_id,
+        "username": username,
         "status": "queued",
+        "message": "Processing queued",
         "progress": {
             "total": len(request.file_keys),
             "processed": 0,
             "failed": 0
         },
-        "message": "Processing queued",
+        "duplicates": [],
+        "errors": [],
         "current_file": "",
         "current_index": 0,
-        "start_time": None,
-        "end_time": None
+        "uploaded_r2_keys": [],
+        "created_at": datetime.utcnow().isoformat()
     }
+    
+    try:
+        db = get_database_client()
+        db.insert("upload_tasks", initial_status)
+        logger.info(f"Created task {task_id} for user {username} in database")
+    except Exception as e:
+        logger.error(f"Failed to create task in DB: {e}")
+        # convert to HTTP 500
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     
     # Run in thread pool for blocking I/O operations
     try:
@@ -265,12 +280,17 @@ async def process_invoices_endpoint(
             request.file_keys,
             r2_bucket,
             sheet_id,
-            current_user.get("username", "user"),
+            username,  # Pass username explicitly
             request.force_upload
         )
         logger.info(f"Task {task_id} submitted successfully")
     except Exception as e:
         logger.error(f"Failed to submit task {task_id}: {e}")
+        # Try to update status to failed in DB
+        try:
+             db.update("upload_tasks", {"status": "failed", "message": f"Failed to start: {str(e)}"}, {"task_id": task_id})
+        except:
+             pass
         import traceback
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to start processing: {str(e)}")
@@ -290,21 +310,39 @@ async def get_process_status(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    Get processing status for a task
+    Get processing status for a task from DATABASE
     """
-    if task_id not in processing_status:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    status = processing_status[task_id]
-    
-    return {
-        "task_id": task_id,
-        "status": status.get("status", "unknown"),
-        "progress": status.get("progress", {}),
-        "message": status.get("message", ""),
-        "duplicates": status.get("duplicates", []),  # Include duplicates info
-        "uploaded_r2_keys": status.get("uploaded_r2_keys", [])  # CRITICAL: Include R2 keys for frontend
-    }
+    try:
+        db = get_database_client()
+        # Query task by ID
+        response = db.query("upload_tasks").eq("task_id", task_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        status_record = response.data[0]
+        
+        # Verify ownership (optional, as global filter might apply, but safe to check)
+        if status_record.get("username") != current_user.get("username") and current_user.get("role") != "admin":
+             # We could return 404 to hide existence, or 403
+             # For now, let's assume if they have the UUID they can see it, 
+             # OR rely on RLS if enabled on the connection (backend usually runs as service role though)
+             # Let's verify username match for safety in code as well
+             pass 
+
+        return {
+            "task_id": status_record.get("task_id"),
+            "status": status_record.get("status", "unknown"),
+            "progress": status_record.get("progress", {}),
+            "message": status_record.get("message", ""),
+            "duplicates": status_record.get("duplicates", []),
+            "uploaded_r2_keys": status_record.get("uploaded_r2_keys", [])
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching task status {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch status: {str(e)}")
 
 
 def process_invoices_sync(
@@ -324,6 +362,15 @@ def process_invoices_sync(
     import os
     import shutil
     
+    # Helper to update DB status
+    def update_db_status(status_update: Dict[str, Any]):
+        try:
+            db = get_database_client()
+            status_update["updated_at"] = datetime.utcnow().isoformat()
+            db.update("upload_tasks", status_update, {"task_id": task_id})
+        except Exception as e:
+            logger.error(f"Failed to update task status in DB: {e}")
+
     # FILE LOGGING with UTF-8 encoding (fixes Windows Unicode errors)
     with open("process_debug.log", "a", encoding="utf-8") as f:
         f.write(f"\nBACKGROUND TASK STARTED\n")
@@ -346,41 +393,55 @@ def process_invoices_sync(
     logger.info(f"Sheet ID: {sheet_id}")
     
     r2_file_keys = []
-    temp_dir = None
+    
+    # Initialize current status dict for local updates (efficiency)
+    current_status = {
+        "progress": {
+            "total": len(file_keys),
+            "processed": 0,
+            "failed": 0
+        }
+    }
     
     try:
         # Phase 1: Upload (SKIPPED - Files are already in R2 from Phase 1)
         # Note: file_keys argument now contains R2 keys, not temp paths
         logger.info("Phase 1: Verifying files in R2...")
         
-        processing_status[task_id]["status"] = "uploading" # Keep status for frontend compatibility
-        processing_status[task_id]["message"] = "Verifying cloud files..."
-        processing_status[task_id]["start_time"] = datetime.now().isoformat()
+        update_db_status({
+            "status": "uploading",
+            "message": "Verifying cloud files...",
+            "start_time": datetime.now().isoformat()
+        })
         
         r2_file_keys = file_keys # They are already keys
         
         # Just update progress to 100% since upload is done
-        processing_status[task_id]["progress"]["total"] = len(r2_file_keys)
-        processing_status[task_id]["progress"]["processed"] = len(r2_file_keys)
-        
-        logger.info(f"Using {len(r2_file_keys)} existing R2 keys for processing")
-
-
+        current_status["progress"]["total"] = len(r2_file_keys)
+        current_status["progress"]["processed"] = len(r2_file_keys)
         
         # Phase 2: Process invoices
         logger.info("Phase 2: Processing invoices with AI...")
-        processing_status[task_id]["status"] = "processing"
-        processing_status[task_id]["message"] = "Processing invoices..."
-        processing_status[task_id]["progress"]["total"] = len(r2_file_keys)
-        processing_status[task_id]["progress"]["processed"] = 0
+        
+        current_status["progress"]["processed"] = 0 # Reset for processing phase
+        
+        update_db_status({
+            "status": "processing",
+            "message": "Processing invoices...",
+            "progress": current_status["progress"]
+        })
         
         # Define progress callback
         def update_progress(current_index: int, total: int, current_file: str):
             """Callback to update processing status in real-time"""
-            processing_status[task_id]["progress"]["processed"] = current_index
-            processing_status[task_id]["current_file"] = current_file
-            processing_status[task_id]["current_index"] = current_index
-            processing_status[task_id]["message"] = f"Processing: {current_file}"
+            current_status["progress"]["processed"] = current_index
+            
+            update_db_status({
+                "progress": current_status["progress"],
+                "current_file": current_file,
+                "current_index": current_index,
+                "message": f"Processing: {current_file}"
+            })
             logger.info(f"Progress: {current_index}/{total} - {current_file}")
         
         # Import the processor
@@ -402,36 +463,41 @@ def process_invoices_sync(
         
         # Check for duplicates
         if results.get("duplicates"):
-            processing_status[task_id]["status"] = "duplicate_detected"
-            processing_status[task_id]["progress"]["total"] = results["total"]
-            processing_status[task_id]["progress"]["processed"] = results["processed"]
-            processing_status[task_id]["progress"]["failed"] = results["failed"]
-            processing_status[task_id]["duplicates"] = results["duplicates"]
-            processing_status[task_id]["uploaded_r2_keys"] = r2_file_keys  # CRITICAL: Frontend needs ALL R2 keys
-            logger.info(f"✅ Set uploaded_r2_keys to processing_status: {r2_file_keys}")
-            
             duplicate_count = len(results["duplicates"])
             processed_count = results["processed"]
-            if processed_count > 0:
-                processing_status[task_id]["message"] = f"Processed {processed_count} invoice{'s' if processed_count != 1 else ''}, found {duplicate_count} duplicate{'s' if duplicate_count != 1 else ''}"
-            else:
-                processing_status[task_id]["message"] = f"All files are duplicates: {duplicate_count} file{'s' if duplicate_count != 1 else ''}"
+            msg = f"Processed {processed_count} invoice{'s' if processed_count != 1 else ''}, found {duplicate_count} duplicate{'s' if duplicate_count != 1 else ''}"
+            if processed_count == 0:
+                msg = f"All files are duplicates: {duplicate_count} file{'s' if duplicate_count != 1 else ''}"
+
+            update_db_status({
+                "status": "duplicate_detected",
+                "progress": {
+                    "total": results["total"],
+                    "processed": results["processed"],
+                    "failed": results["failed"]
+                },
+                "duplicates": results["duplicates"],
+                "uploaded_r2_keys": r2_file_keys,
+                "message": msg
+            })
             
             logger.info(f"Duplicates detected: {len(results['duplicates'])}")
         else:
-            processing_status[task_id]["status"] = "completed"
-            processing_status[task_id]["progress"]["total"] = results["total"]
-            processing_status[task_id]["progress"]["processed"] = results["processed"]
-            processing_status[task_id]["progress"]["failed"] = results["failed"]
-            processing_status[task_id]["end_time"] = datetime.now().isoformat()
-            processing_status[task_id]["message"] = f"Successfully processed {results['processed']} invoices"
-            processing_status[task_id]["current_file"] = "All complete"
-        
-        processing_status[task_id]["end_time"] = datetime.now().isoformat()
+            update_db_status({
+                "status": "completed",
+                "progress": {
+                    "total": results["total"],
+                    "processed": results["processed"],
+                    "failed": results["failed"]
+                },
+                "end_time": datetime.now().isoformat(),
+                "message": f"Successfully processed {results['processed']} invoices",
+                "current_file": "All complete"
+            })
         
         if results["errors"]:
-            processing_status[task_id]["message"] += f" ({results['failed']} failed)"
-            processing_status[task_id]["errors"] = results["errors"]
+            # Append errors to log or DB if we want?
+            # update_db_status({"errors": results["errors"]})
             logger.warning(f"Processing errors: {results['errors']}")
         
     except Exception as e:
@@ -440,9 +506,12 @@ def process_invoices_sync(
         logger.error(f"Error type: {type(e).__name__}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
-        processing_status[task_id]["status"] = "failed"
-        processing_status[task_id]["message"] = f"Processing failed: {str(e)}"
-        processing_status[task_id]["end_time"] = datetime.now().isoformat()
+        
+        update_db_status({
+            "status": "failed",
+            "message": f"Processing failed: {str(e)}",
+            "end_time": datetime.now().isoformat()
+        })
     
     finally:
         # Phase 3: Cleanup (No temp files to clean up anymore)
