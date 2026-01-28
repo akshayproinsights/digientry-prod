@@ -104,28 +104,51 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    token = credentials.credentials
-    payload = decode_access_token(token)
-    
-    if payload is None:
-        raise credentials_exception
-    
-    username: str = payload.get("sub")
-    if username is None:
-        raise credentials_exception
-    
-    # Keep username case as-is (case-sensitive matching)
-    
-    # Get user config
-    user_config = get_user_config(username)
-    if user_config is None:
-        raise credentials_exception
-    
-    # Add username to user_config for convenience
-    user_data = user_config.copy()
-    user_data["username"] = username
-    
-    return user_data
+    try:
+        try:
+            token = credentials.credentials
+            payload = decode_access_token(token)
+            
+            if payload is None:
+                logger.warning("Token payload is None")
+                raise credentials_exception
+            
+            username: str = payload.get("sub")
+            if username is None:
+                logger.warning("Username in payload is None")
+                raise credentials_exception
+            
+            # Keep username case as-is (case-sensitive matching)
+            
+            # Get user config
+            try:
+                user_config = get_user_config(username)
+            except Exception as e:
+                logger.error(f"Error loading user config for {username}: {e}")
+                raise HTTPException(status_code=500, detail=f"Config error: {str(e)}")
+
+            if user_config is None:
+                logger.warning(f"User config not found for {username}")
+                raise credentials_exception
+            
+            # Add username to user_config for convenience
+            user_data = user_config.copy()
+            user_data["username"] = username
+            
+            return user_data
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error processing token or user data: {e}")
+            raise credentials_exception
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in get_current_user: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Auth error: {str(e)}")
 
 
 async def get_current_user_sheet_id(current_user: Dict[str, Any] = Depends(get_current_user)) -> str:

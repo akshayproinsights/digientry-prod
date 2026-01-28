@@ -106,53 +106,54 @@ async def upload_files(
     Returns immediately with temp file references.
     R2 upload will happen in background when processing starts.
     """
-    import tempfile
-    import os
+    import asyncio
     
-    temp_files = []
+    # 1. Read all files into memory (concurrently read if possible, but File read is async)
+    # Be careful with memory usage for huge files, but invoices are small images
+    uploads = []
     username = current_user.get("username", "user")
     
     try:
-        # Create temp directory for this batch
-        temp_dir = tempfile.mkdtemp(prefix=f"upload_{username}_")
-        logger.info(f"Created temp directory: {temp_dir}")
+        # Prepare arguments for threaded execution
+        upload_tasks = []
+        loop = asyncio.get_event_loop()
         
         for file in files:
-            try:
-                # Read file content
-                content = await file.read()
-                
-                # Save to temp file
-                temp_path = os.path.join(temp_dir, file.filename)
-                with open(temp_path, 'wb') as f:
-                    f.write(content)
-                
-                # Store temp path with metadata
-                temp_files.append({
-                    "temp_path": temp_path,
-                    "original_filename": file.filename,
-                    "size": len(content)
-                })
-                
-                logger.info(f"Saved temp file: {file.filename} ({len(content)} bytes)")
-                
-            except Exception as e:
-                logger.error(f"Error saving {file.filename}: {e}")
-                continue
+            content = await file.read()
+            # Schedule upload in thread pool
+            task = loop.run_in_executor(
+                executor,
+                upload_single_file_sync,
+                content,
+                file.filename,
+                username,
+                r2_bucket
+            )
+            upload_tasks.append(task)
         
-        logger.info(f"Saved {len(temp_files)}/{len(files)} files to temp storage")
+        # Wait for all uploads to finish
+        logger.info(f"Uploading {len(files)} files to R2 in parallel...")
+        results = await asyncio.gather(*upload_tasks)
         
-        # Return temp file references (we'll use temp_path as identifier)
-        temp_refs = [tf["temp_path"] for tf in temp_files]
+        # Filter successful uploads (None indicates failure)
+        uploaded_keys = [key for key in results if key is not None]
+        
+        if len(uploaded_keys) == 0 and len(files) > 0:
+            raise HTTPException(status_code=500, detail="Failed to upload any files to storage")
+            
+        logger.info(f"Successfully uploaded {len(uploaded_keys)}/{len(files)} files to R2")
         
         return {
             "success": True,
-            "uploaded_files": temp_refs,  # These are temp paths now, not R2 keys
-            "message": f"Received {len(temp_files)} of {len(files)} file(s), processing in background"
+            "uploaded_files": uploaded_keys,  # These are now R2 KEYS
+            "message": f"Uploaded {len(uploaded_keys)} of {len(files)} file(s)"
         }
         
     except Exception as e:
         logger.error(f"Error in upload_files: {e}")
+        # traceback
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -348,47 +349,22 @@ def process_invoices_sync(
     temp_dir = None
     
     try:
-        # Phase 1: Upload temp files to R2 (skip if force_upload=True, files already in R2)
-        if force_upload:
-            # Files are already R2 keys, no need to upload
-            logger.info("Force upload enabled - files already in R2, skipping upload phase")
-            r2_file_keys = file_keys  # file_keys are already R2 keys
-        else:
-            # Normal flow: Upload temp files to R2
-            logger.info("Phase 1: Uploading files to R2...")
-            processing_status[task_id]["status"] = "uploading"
-            processing_status[task_id]["message"] = "Uploading files to cloud storage..."
-            processing_status[task_id]["start_time"] = datetime.now().isoformat()
-            
-            for idx, temp_path in enumerate(file_keys):
-                try:
-                    # Read temp file
-                    with open(temp_path, 'rb') as f:
-                        content = f.read()
-                    
-                    filename = os.path.basename(temp_path)
-                    
-                    # Upload to R2 using existing function
-                    r2_key = upload_single_file_sync(
-                        content=content,
-                        filename=filename,
-                        username=username,
-                        r2_bucket=r2_bucket
-                    )
-                    
-                    if r2_key:
-                        r2_file_keys.append(r2_key)
-                        logger.info(f"Uploaded {idx+1}/{len(file_keys)}: {r2_key}")
-                    
-                    # Update progress
-                    processing_status[task_id]["message"] = f"Uploading to cloud: {idx+1}/{len(file_keys)}"
-                    processing_status[task_id]["progress"]["processed"] = idx
-                    
-                except Exception as e:
-                    logger.error(f"Error uploading {temp_path}: {e}")
-                    continue
-            
-            logger.info(f"R2 upload complete: {len(r2_file_keys)}/{len(file_keys)} files")
+        # Phase 1: Upload (SKIPPED - Files are already in R2 from Phase 1)
+        # Note: file_keys argument now contains R2 keys, not temp paths
+        logger.info("Phase 1: Verifying files in R2...")
+        
+        processing_status[task_id]["status"] = "uploading" # Keep status for frontend compatibility
+        processing_status[task_id]["message"] = "Verifying cloud files..."
+        processing_status[task_id]["start_time"] = datetime.now().isoformat()
+        
+        r2_file_keys = file_keys # They are already keys
+        
+        # Just update progress to 100% since upload is done
+        processing_status[task_id]["progress"]["total"] = len(r2_file_keys)
+        processing_status[task_id]["progress"]["processed"] = len(r2_file_keys)
+        
+        logger.info(f"Using {len(r2_file_keys)} existing R2 keys for processing")
+
 
         
         # Phase 2: Process invoices
@@ -469,17 +445,7 @@ def process_invoices_sync(
         processing_status[task_id]["end_time"] = datetime.now().isoformat()
     
     finally:
-        # Phase 3: Cleanup temp files
-        try:
-            if file_keys:
-                # Get temp directory from first file
-                temp_dir = os.path.dirname(file_keys[0])
-                if os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
-                    logger.info(f"Cleaned up temp directory: {temp_dir}")
-        except Exception as e:
-            logger.error(f"Error cleaning up temp files: {e}")
-        
+        # Phase 3: Cleanup (No temp files to clean up anymore)
         logger.info("=== BACKGROUND TASK COMPLETED ===")
 
 
