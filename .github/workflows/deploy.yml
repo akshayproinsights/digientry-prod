@@ -80,6 +80,9 @@ jobs:
         run: npm install && npm run build
         working-directory: ./frontend
         
+      - name: List Build Output
+        run: ls -R frontend/dist
+        
       - name: Deploy to Firebase Hosting
         env:
           # Use the Service Account Key from secrets for authentication

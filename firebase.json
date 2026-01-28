@@ -13,6 +13,10 @@
                     "serviceId": "digientry-backend",
                     "region": "us-central1"
                 }
+            },
+            {
+                "source": "**",
+                "destination": "/index.html"
             }
         ]
     }
