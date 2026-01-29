@@ -4,6 +4,7 @@ import { Toaster } from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
 import Sidebar from './Sidebar';
 import SalesBackgroundPoller from './SalesBackgroundPoller';
+import InventoryBackgroundPoller from './InventoryBackgroundPoller';
 
 
 
@@ -14,6 +15,11 @@ const Layout: React.FC = () => {
 
     // State for page-specific header actions (buttons, etc.)
     const [headerActions, setHeaderActions] = useState<React.ReactNode>(null);
+
+    // Reset header actions when route changes
+    React.useEffect(() => {
+        setHeaderActions(null);
+    }, [location.pathname]);
 
     // Get time-based greeting (Good morning/afternoon/evening)
     const getTimeBasedGreeting = () => {
@@ -58,6 +64,7 @@ const Layout: React.FC = () => {
     return (
         <div className="flex h-screen bg-gray-50">
             <SalesBackgroundPoller />
+            <InventoryBackgroundPoller />
             {/* Sidebar */}
             <Sidebar />
 

@@ -181,7 +181,7 @@ const DashboardPage: React.FC = () => {
                 <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-1">
                     <button
                         onClick={() => setDatePreset('week')}
-                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${selectedPreset === 'week'
+                        className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'week'
                             ? 'bg-indigo-600 text-white'
                             : 'text-gray-700 hover:bg-gray-100'
                             }`}
@@ -190,7 +190,7 @@ const DashboardPage: React.FC = () => {
                     </button>
                     <button
                         onClick={() => setDatePreset('month')}
-                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${selectedPreset === 'month'
+                        className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'month'
                             ? 'bg-indigo-600 text-white'
                             : 'text-gray-700 hover:bg-gray-100'
                             }`}
@@ -198,17 +198,8 @@ const DashboardPage: React.FC = () => {
                         This Month
                     </button>
                     <button
-                        onClick={() => setDatePreset('quarter')}
-                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${selectedPreset === 'quarter'
-                            ? 'bg-indigo-600 text-white'
-                            : 'text-gray-700 hover:bg-gray-100'
-                            }`}
-                    >
-                        Last 90 Days
-                    </button>
-                    <button
                         onClick={() => setDatePreset('all')}
-                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${selectedPreset === 'all'
+                        className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'all'
                             ? 'bg-indigo-600 text-white'
                             : 'text-gray-700 hover:bg-gray-100'
                             }`}
@@ -217,12 +208,12 @@ const DashboardPage: React.FC = () => {
                     </button>
                     <button
                         onClick={() => setDatePreset('custom')}
-                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition flex items-center gap-1 ${selectedPreset === 'custom'
+                        className={`px-3 py-1 rounded-md text-xs font-medium transition flex items-center gap-1 ${selectedPreset === 'custom'
                             ? 'bg-indigo-600 text-white'
                             : 'text-gray-700 hover:bg-gray-100'
                             }`}
                     >
-                        <Calendar size={16} />
+                        <Calendar size={14} />
                         Custom
                     </button>
                 </div>
@@ -230,15 +221,15 @@ const DashboardPage: React.FC = () => {
                 {/* Advanced Filters Toggle */}
                 <button
                     onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
-                    className="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition"
+                    className="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-3 py-1 rounded-lg hover:bg-gray-50 transition"
                 >
-                    <span className="text-sm font-medium">Advanced Filters</span>
+                    <span className="text-xs font-medium">Advanced Filters</span>
                     <ChevronDown
-                        size={16}
+                        size={14}
                         className={`transition-transform ${showAdvancedFilters ? 'rotate-180' : ''}`}
                     />
                     {hasActiveFilters && (
-                        <span className="ml-1 bg-indigo-600 text-white text-xs font-semibold px-2 py-0.5 rounded-full">
+                        <span className="ml-1 bg-indigo-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-full">
                             {[customerFilter, vehicleFilter, partNumberFilter].filter(Boolean).length}
                         </span>
                     )}
@@ -469,18 +460,7 @@ const DashboardPage: React.FC = () => {
 
             {/* BOTTOM ROW: Charts - Twin Towers with Equal Height */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* Sales Trend Chart - Takes 6/12 width (50%) - Fixed Height */}
-                <div className="lg:col-span-6 bg-white rounded-lg h-[500px]">
-                    <SalesTrendChart
-                        data={dailySales || []}
-                        isLoading={salesLoading}
-                        dateRangeLabel={getDateRangeLabel()}
-                        startDate={dateRange.start}
-                        endDate={dateRange.end}
-                    />
-                </div>
-
-                {/* Draft PO Manager - Narrower (takes 3/7 of space) */}
+                {/* Draft PO Manager - Now on Left (50%) */}
                 <DraftPOManager
                     draftItems={draftPOItems}
                     onRemoveItem={handleRemoveFromDraft}
@@ -490,6 +470,17 @@ const DashboardPage: React.FC = () => {
                         refetchKPIs();
                     }}
                 />
+
+                {/* Sales Trend Chart - Now on Right (50%) - Fixed Height */}
+                <div className="lg:col-span-6 bg-white rounded-lg h-[500px]">
+                    <SalesTrendChart
+                        data={dailySales || []}
+                        isLoading={salesLoading}
+                        dateRangeLabel={getDateRangeLabel()}
+                        startDate={dateRange.start}
+                        endDate={dateRange.end}
+                    />
+                </div>
             </div>
         </div>
     );

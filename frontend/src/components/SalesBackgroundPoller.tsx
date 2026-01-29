@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useGlobalStatus } from '../contexts/GlobalStatusContext';
-import { uploadAPI as salesAPI, invoicesAPI, reviewAPI } from '../services/api';
+import { uploadAPI as salesAPI, reviewAPI } from '../services/api';
 
 const SalesBackgroundPoller: React.FC = () => {
     const location = useLocation();
@@ -9,56 +9,64 @@ const SalesBackgroundPoller: React.FC = () => {
     const pollIntervalRef = useRef<any>(null);
     const statsIntervalRef = useRef<any>(null);
 
+    // Defined at component level to be reusable
+    const fetchGlobalStats = async () => {
+        // PREVENT FLUCTUATION:
+        // If an upload is in progress, we paused stats updates to keep the number stable.
+        // The number should only update once the COMPLETION event is processed.
+        if (localStorage.getItem('activeSalesTaskId')) {
+            return;
+        }
+
+        try {
+            // Fetch both dates and amounts data to ensure accurate counts matching Review Page
+            const [datesData, amountsData] = await Promise.all([
+                reviewAPI.getDates(),
+                reviewAPI.getAmounts()
+            ]);
+
+            const allRecords = [...(datesData.records || []), ...(amountsData.records || [])];
+
+            // Count unique receipt numbers by status
+            const allReceiptNumbers = new Set<string>();
+            allRecords.forEach(r => {
+                if (r['Receipt Number']) allReceiptNumbers.add(r['Receipt Number']);
+            });
+
+            let pending = 0;
+            let completed = 0;
+            let duplicates = 0;
+
+            allReceiptNumbers.forEach(receiptNum => {
+                const receiptRecords = allRecords.filter(r => r['Receipt Number'] === receiptNum);
+
+                // Normalize status
+                const getStatus = (r: any) => (r['Verification Status'] || 'Pending').toLowerCase();
+
+                const allDone = receiptRecords.every(r => getStatus(r) === 'done');
+                const hasPending = receiptRecords.some(r => getStatus(r) === 'pending');
+                const hasDuplicate = receiptRecords.some(r => getStatus(r) === 'duplicate receipt number');
+
+                if (hasDuplicate) {
+                    duplicates++;
+                } else if (allDone) {
+                    completed++;
+                } else if (hasPending) {
+                    pending++;
+                }
+            });
+
+            setSalesStatus({
+                reviewCount: pending + duplicates,
+                syncCount: completed
+            });
+        } catch (error) {
+            console.error('Error fetching global sales stats:', error);
+        }
+    };
+
     // 1. Poll for global stats (Review Count) independent of upload tasks
     useEffect(() => {
-        const fetchGlobalStats = async () => {
-            try {
-                // Fetch both dates and amounts data to ensure accurate counts matching Review Page
-                const [datesData, amountsData] = await Promise.all([
-                    reviewAPI.getDates(),
-                    reviewAPI.getAmounts()
-                ]);
-
-                const allRecords = [...(datesData.records || []), ...(amountsData.records || [])];
-
-                // Count unique receipt numbers by status
-                const allReceiptNumbers = new Set<string>();
-                allRecords.forEach(r => {
-                    if (r['Receipt Number']) allReceiptNumbers.add(r['Receipt Number']);
-                });
-
-                let pending = 0;
-                let completed = 0;
-                let duplicates = 0;
-
-                allReceiptNumbers.forEach(receiptNum => {
-                    const receiptRecords = allRecords.filter(r => r['Receipt Number'] === receiptNum);
-
-                    // Normalize status
-                    const getStatus = (r: any) => (r['Verification Status'] || 'Pending').toLowerCase();
-
-                    const allDone = receiptRecords.every(r => getStatus(r) === 'done');
-                    const hasPending = receiptRecords.some(r => getStatus(r) === 'pending');
-                    const hasDuplicate = receiptRecords.some(r => getStatus(r) === 'duplicate receipt number');
-
-                    if (hasDuplicate) {
-                        duplicates++;
-                    } else if (allDone) {
-                        completed++;
-                    } else if (hasPending) {
-                        pending++;
-                    }
-                });
-
-                setSalesStatus({
-                    reviewCount: pending + duplicates,
-                    syncCount: completed
-                });
-            } catch (error) {
-                console.error('Error fetching global sales stats:', error);
-            }
-        };
-
         // Fetch immediately on mount
         fetchGlobalStats();
 
@@ -106,28 +114,24 @@ const SalesBackgroundPoller: React.FC = () => {
                 // Check for completion
                 if (statusData.status === 'completed') {
                     // Task completed!
+
+                    // Clear task ID FIRST so that fetchGlobalStats is allowed to run
+                    localStorage.removeItem('activeSalesTaskId');
+
                     setSalesStatus({
                         isUploading: false,
                         processingCount: 0,
                         totalProcessing: 0,
-                        // reviewCount is now handled by the separate stats poller above, 
-                        // but we can set syncCount here if needed, or let stats poller handle it eventually.
-                        // However, immediate feedback is nice.
-                        syncCount: processed,
                         isComplete: true // Show green tick
                     });
-
-                    // Clear task ID so we stop polling
-                    localStorage.removeItem('activeSalesTaskId');
 
                     if (pollIntervalRef.current) {
                         clearInterval(pollIntervalRef.current);
                         pollIntervalRef.current = null;
                     }
 
-                    // Force a stats refresh to ensure counts are 100% accurate
-                    const stats = await invoicesAPI.getStats();
-                    setSalesStatus({ reviewCount: stats.pending_review });
+                    // Immediately refresh stats to show new numbers now that processing is done
+                    await fetchGlobalStats();
 
                 } else if (statusData.status === 'failed') {
                     // Failed
@@ -152,8 +156,6 @@ const SalesBackgroundPoller: React.FC = () => {
                     setSalesStatus({
                         isUploading: false,
                         processingCount: 0,
-                        // reviewCount for duplicates is tricky - stats API might count them or not depending on implementation
-                        // For now we trust the stats API for the badge, but local state can reflect this specific event
                         isComplete: false
                     });
                 } else {

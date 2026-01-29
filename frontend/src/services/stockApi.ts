@@ -27,6 +27,7 @@ export interface StockLevel {
     uploaded_at?: string;  // Timestamp of upload
     priority?: string;
     latest_vendor_rate?: number;  // Latest vendor rate for displaying in Total Value column
+    manual_adjustment?: number;
 }
 
 export interface StockSummary {
@@ -123,10 +124,24 @@ export const updateStockLevel = async (
 /**
  * Manual stock adjustment
  */
-export const adjustStock = async (
-    adjustment: StockAdjustment
-): Promise<{ previous_stock: number; new_stock: number }> => {
+export const adjustStock = async (adjustment: StockAdjustment): Promise<StockLevel> => {
     const response = await apiClient.post('/api/stock/adjust', adjustment);
+    return response.data;
+};
+
+/**
+ * Update stock adjustment based on physical count
+ */
+export const updateStockAdjustment = async (
+    partNumber: string,
+    physicalCount: number,
+    reason?: string
+): Promise<{ adjustment: number; physical_count: number }> => {
+    const response = await apiClient.post('/api/stock/update-stock-adjustment', {
+        part_number: partNumber,
+        physical_count: physicalCount,
+        reason
+    });
     return response.data;
 };
 

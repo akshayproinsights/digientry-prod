@@ -1,0 +1,1 @@
+ALTER TABLE stock_levels ADD COLUMN IF NOT EXISTS manual_adjustment INTEGER DEFAULT 0;

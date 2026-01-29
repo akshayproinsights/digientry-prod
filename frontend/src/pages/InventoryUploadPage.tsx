@@ -44,49 +44,62 @@ const InventoryUploadPage: React.FC = () => {
         // Clear completion badge if visiting this page
         setInventoryStatus({ isComplete: false });
 
-        // First check if there's a saved completion status
-        const savedCompletion = localStorage.getItem('inventoryCompletionStatus');
-        if (savedCompletion) {
-            try {
-                const completionData = JSON.parse(savedCompletion);
-                setProcessingStatus(completionData);
-                setIsProcessing(false); // ✓ Not processing anymore - completed
-                setIsUploading(false);
-                setFiles([]); // ✓ Clear files since we're done
+        let interval: any = null;
 
-                // RESTORE GLOBAL STATUS ON LOAD
-                const processed = completionData.progress?.processed || 0;
-                // Assuming completed means ready for sync/verify
-                setInventoryStatus({
-                    isUploading: false,
-                    processingCount: 0,
-                    reviewCount: 0,
-                    syncCount: processed,
-                    isComplete: false // Clear tick
-                });
+        const checkStatus = () => {
+            // First check if there's a saved completion status
+            const savedCompletion = localStorage.getItem('inventoryCompletionStatus');
 
-
-                return; // Don't poll if already completed
-            } catch (e) {
-                console.error('Error parsing inventory completion:', e);
-                localStorage.removeItem('inventoryCompletionStatus');
-            }
-        }
-
-        const activeTaskId = localStorage.getItem('activeInventoryTaskId');
-        if (activeTaskId) {
-            // CRITICAL: Set processing state IMMEDIATELY
-
-            setIsProcessing(true);
-            setIsUploading(false);
-
-            // Set initial global state assuming processing is active
-            setInventoryStatus({ isUploading: false, processingCount: 1, totalProcessing: 1 }); // Approx
-
-            // Start continuous polling
-            const interval = setInterval(async () => {
+            if (savedCompletion) {
                 try {
-                    const statusData = await inventoryAPI.getProcessStatus(activeTaskId);
+                    const completionData = JSON.parse(savedCompletion);
+                    // Only update if state is different to avoid renders
+                    if (JSON.stringify(processingStatus) !== JSON.stringify(completionData)) {
+                        setProcessingStatus(completionData);
+                    }
+
+                    setIsProcessing(false);
+                    setIsUploading(false);
+                    setFiles([]);
+
+                    // RESTORE GLOBAL STATUS ON LOAD
+                    const processed = completionData.progress?.processed || 0;
+                    setInventoryStatus({
+                        isUploading: false,
+                        processingCount: 0,
+                        reviewCount: 0,
+                        syncCount: processed,
+                        isComplete: true
+                    });
+
+                    // Stop polling if we found completion
+                    if (interval) clearInterval(interval);
+                    return true; // Signal handled
+                } catch (e) {
+                    console.error('Error parsing inventory completion:', e);
+                    localStorage.removeItem('inventoryCompletionStatus');
+                }
+            }
+
+            const activeTaskId = localStorage.getItem('activeInventoryTaskId');
+
+            if (activeTaskId && !pollingInterval) {
+                // CRITICAL: Set processing state IMMEDIATELY/RESUME
+                setIsProcessing(true);
+                setIsUploading(false);
+                setInventoryStatus({ isUploading: false, processingCount: 1, totalProcessing: 1 }); // Approx
+
+                startPolling(activeTaskId);
+                return true;
+            }
+            return false;
+        };
+
+        const startPolling = (taskId: string) => {
+            // Start continuous polling
+            interval = setInterval(async () => {
+                try {
+                    const statusData = await inventoryAPI.getProcessStatus(taskId);
 
                     // UPDATE GLOBAL STATUS
                     const total = statusData.progress?.total || 0;
@@ -97,7 +110,7 @@ const InventoryUploadPage: React.FC = () => {
                         isUploading: false,
                         processingCount: remaining,
                         totalProcessing: total,
-                        reviewCount: 0, // In processing phase
+                        reviewCount: 0,
                         syncCount: 0
                     });
 
@@ -121,16 +134,13 @@ const InventoryUploadPage: React.FC = () => {
                         setFilesToSkip([]);
                         setFilesToForceUpload([]);
 
-                        // UPDATE GLOBAL STATUS: Need Review
                         setInventoryStatus({
                             isUploading: false,
                             processingCount: 0,
-                            reviewCount: duplicates.length, // Pending duplicates to review
+                            reviewCount: duplicates.length,
                             syncCount: processed
                         });
 
-                        // CRITICAL: Use the full list of R2 keys from the backend response
-                        // This ensures we know about ALL files (new + duplicates) for correct processing later
                         const allFileKeys = (statusData as any).uploaded_r2_keys || duplicates.map((dup: any) => dup.file_key);
                         setUploadedFiles(allFileKeys);
                         (window as any).__temp_r2_keys = allFileKeys;
@@ -146,7 +156,6 @@ const InventoryUploadPage: React.FC = () => {
                         localStorage.removeItem('activeInventoryTaskId');
                         localStorage.setItem('inventoryCompletionStatus', JSON.stringify(statusData));
 
-                        // UPDATE GLOBAL STATUS: Finished
                         setInventoryStatus({
                             isUploading: false,
                             processingCount: 0,
@@ -154,7 +163,8 @@ const InventoryUploadPage: React.FC = () => {
                             syncCount: processed
                         });
 
-
+                        // Force a refresh of the status to show success UI immediately
+                        checkStatus();
                     }
                 } catch (error: any) {
                     console.error('Error polling inventory status:', error);
@@ -170,13 +180,26 @@ const InventoryUploadPage: React.FC = () => {
             }, 1000);
 
             setPollingInterval(interval);
+        };
+
+        // Initial check
+        if (!checkStatus()) {
+            // If initially idle, set up an idle poller to watch for background updates
+            const idleWatcher = setInterval(() => {
+                checkStatus();
+            }, 2000); // Check every 2 seconds
+
+            return () => {
+                clearInterval(idleWatcher);
+                if (pollingInterval) clearInterval(pollingInterval);
+            };
         }
 
-        // Cleanup on unmount - preserve session
+        // Cleanup on unmount
         return () => {
-            if (pollingInterval) {
-                clearInterval(pollingInterval);
-            }
+            if (interval) clearInterval(interval);
+            // Clear completion badge when leaving the page
+            setInventoryStatus({ isComplete: false });
         };
     }, []);
 

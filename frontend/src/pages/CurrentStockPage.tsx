@@ -8,6 +8,7 @@ import {
     getStockSummary,
     updateStockLevel,
     adjustStock,
+    updateStockAdjustment,
     calculateStockLevels,
     getStockHistory,
     updateStockTransaction,
@@ -246,6 +247,7 @@ const CurrentStockPage: React.FC = () => {
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [itemToDelete, setItemToDelete] = useState<StockLevel | null>(null);
     const [addingToPO, setAddingToPO] = useState<Set<string>>(new Set());
+    const [selectedAdjustmentItem, setSelectedAdjustmentItem] = useState<StockLevel | null>(null);
 
     const searchTimeoutRef = useRef<{ [key: number]: number }>({});
     const dropdownRef = useRef<HTMLDivElement>(null);
@@ -1367,14 +1369,26 @@ const CurrentStockPage: React.FC = () => {
                                                     </span>
                                                 </td>
 
-                                                {/* Col 9: On Hand - 1% Right - Result */}
-                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-right">
-                                                    <span className={`text-lg font-black tabular-nums ${Math.round((item.current_stock || 0) + (item.old_stock || 0)) < 0
+                                                {/* Col 9: On Hand - 1% Right - Result - Clickable */}
+                                                <td
+                                                    className="px-2 py-2 w-[1%] whitespace-nowrap text-right cursor-pointer hover:bg-blue-50 transition-colors group relative"
+                                                    onClick={() => {
+                                                        setSelectedAdjustmentItem(item);
+                                                        setShowAdjustmentModal(true);
+                                                    }}
+                                                    title="Click to adjust physical stock"
+                                                >
+                                                    <span className={`text-lg font-black tabular-nums border-b border-dotted border-gray-400 ${Math.round((item.current_stock || 0) + (item.old_stock || 0) + (item.manual_adjustment || 0)) < 0
                                                         ? 'text-red-600'
                                                         : 'text-gray-900'
                                                         }`}>
-                                                        {Math.round((item.current_stock || 0) + (item.old_stock || 0))}
+                                                        {Math.round((item.current_stock || 0) + (item.old_stock || 0) + (item.manual_adjustment || 0))}
                                                     </span>
+                                                    {item.manual_adjustment !== 0 && (
+                                                        <span className="absolute top-0 right-0 text-[8px] bg-amber-100 text-amber-800 px-1 rounded-full">
+                                                            Adj
+                                                        </span>
+                                                    )}
                                                 </td>
 
                                                 {/* Col 10: Value - Fixed Width Increased (w-28) */}
@@ -1428,12 +1442,18 @@ const CurrentStockPage: React.FC = () => {
             </div>
 
             {/* Manual Adjustment Modal */}
+            {/* Manual Adjustment Modal */}
             {showAdjustmentModal && (
                 <ManualAdjustmentModal
                     stockItems={stockItems}
-                    onClose={() => setShowAdjustmentModal(false)}
+                    initialItem={selectedAdjustmentItem}
+                    onClose={() => {
+                        setShowAdjustmentModal(false);
+                        setSelectedAdjustmentItem(null);
+                    }}
                     onSuccess={() => {
                         setShowAdjustmentModal(false);
+                        setSelectedAdjustmentItem(null);
                         loadData();
                     }}
                 />
@@ -1494,42 +1514,61 @@ interface ManualAdjustmentModalProps {
     stockItems: StockLevel[];
     onClose: () => void;
     onSuccess: () => void;
+    initialItem?: StockLevel | null;
 }
 
-const ManualAdjustmentModal: React.FC<ManualAdjustmentModalProps> = ({ stockItems, onClose, onSuccess }) => {
-    const [selectedPart, setSelectedPart] = useState('');
-    const [adjustmentType, setAdjustmentType] = useState<'add' | 'subtract' | 'set_absolute'>('add');
-    const [quantity, setQuantity] = useState('');
+const ManualAdjustmentModal: React.FC<ManualAdjustmentModalProps> = ({ stockItems, onClose, onSuccess, initialItem }) => {
+    const [selectedPart, setSelectedPart] = useState(initialItem?.part_number || '');
+    const [physicalCount, setPhysicalCount] = useState<string>(
+        initialItem ?
+            // Default to current calculated physical stock
+            Math.round((initialItem.current_stock || 0) + (initialItem.old_stock || 0) + (initialItem.manual_adjustment || 0)).toString()
+            : ''
+    );
     const [reason, setReason] = useState('');
     const [loading, setLoading] = useState(false);
+
+    // Effect to update if initialItem changes
+    useEffect(() => {
+        if (initialItem) {
+            setSelectedPart(initialItem.part_number);
+            const currentPhys = Math.round((initialItem.current_stock || 0) + (initialItem.old_stock || 0) + (initialItem.manual_adjustment || 0));
+            setPhysicalCount(currentPhys.toString());
+        }
+    }, [initialItem]);
+
+    // Find currently selected item to show system stats
+    const selectedItem = stockItems.find(i => i.part_number === selectedPart);
+    const systemStock = selectedItem ? Math.round((selectedItem.current_stock || 0) + (selectedItem.old_stock || 0)) : 0;
+    const currentAdjustment = selectedItem?.manual_adjustment || 0;
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
-        if (!selectedPart || !quantity) {
+        if (!selectedPart || physicalCount === '') {
             alert('Please fill in all required fields');
             return;
         }
 
-        const qty = parseFloat(quantity);
-        if (isNaN(qty) || qty < 0) {
-            alert('Quantity must be a positive number');
+        const count = parseFloat(physicalCount);
+        if (isNaN(count) || count < 0) {
+            alert('Physical count must be a non-negative number');
             return;
         }
 
         try {
             setLoading(true);
-            const result = await adjustStock({
-                part_number: selectedPart,
-                adjustment_type: adjustmentType,
-                quantity: qty,
-                reason: reason || undefined,
-            });
+            const result = await updateStockAdjustment(
+                selectedPart,
+                count,
+                reason || undefined
+            );
 
             alert(
                 `Stock adjusted successfully!\n` +
-                `Previous: ${result.previous_stock}\n` +
-                `New: ${result.new_stock}`
+                `System Value: ${Math.round(systemStock)}\n` +
+                `New Adjustment: ${result.adjustment}\n` +
+                `Final Physical Count: ${result.physical_count}`
             );
             onSuccess();
         } catch (error: any) {
@@ -1543,72 +1582,88 @@ const ManualAdjustmentModal: React.FC<ManualAdjustmentModalProps> = ({ stockItem
     return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
-                <h2 className="text-xl font-bold text-gray-900 mb-4">Manual Stock Adjustment</h2>
+                <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-xl font-bold text-gray-900">Physical Stock Adjustment</h2>
+                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                        <X size={24} />
+                    </button>
+                </div>
 
                 <form onSubmit={handleSubmit} className="space-y-4">
-                    {/* Part Selection */}
+                    {/* Part Select */}
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Select Part <span className="text-red-500">*</span>
+                            Part Number
                         </label>
                         <select
                             value={selectedPart}
                             onChange={(e) => setSelectedPart(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                            required
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-gray-50"
+                            disabled={!!initialItem}
                         >
                             <option value="">-- Select Part --</option>
                             {stockItems.map((item) => (
                                 <option key={item.id} value={item.part_number}>
-                                    {item.part_number} - {item.internal_item_name} (Stock: {item.current_stock})
+                                    {item.part_number} - {item.internal_item_name}
                                 </option>
                             ))}
                         </select>
                     </div>
 
-                    {/* Adjustment Type */}
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Adjustment Type <span className="text-red-500">*</span>
-                        </label>
-                        <select
-                            value={adjustmentType}
-                            onChange={(e) => setAdjustmentType(e.target.value as any)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                        >
-                            <option value="add">Add to Stock</option>
-                            <option value="subtract">Subtract from Stock</option>
-                            <option value="set_absolute">Set Absolute Value</option>
-                        </select>
-                    </div>
+                    {/* Stats Display */}
+                    {selectedItem && (
+                        <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 space-y-2">
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">System Calculated (In-Out):</span>
+                                <span className="font-medium">{Math.round(selectedItem.current_stock || 0)}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Opening Stock:</span>
+                                <span className="font-medium">{selectedItem.old_stock || 0}</span>
+                            </div>
+                            <div className="flex justify-between text-sm border-t border-blue-200 pt-2">
+                                <span className="text-blue-800 font-semibold">Total System Stock:</span>
+                                <span className="font-bold text-blue-800">{systemStock}</span>
+                            </div>
+                        </div>
+                    )}
 
-                    {/* Quantity */}
+                    {/* Physical Count Input */}
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Quantity <span className="text-red-500">*</span>
+                        <label className="block text-sm font-medium text-gray-900 mb-1">
+                            Actual Physical Count <span className="text-red-500">*</span>
                         </label>
-                        <input
-                            type="number"
-                            value={quantity}
-                            onChange={(e) => setQuantity(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                            min="0"
-                            step="0.01"
-                            required
-                        />
+                        <div className="relative">
+                            <input
+                                type="number"
+                                value={physicalCount}
+                                onChange={(e) => setPhysicalCount(e.target.value)}
+                                className="w-full pl-3 pr-4 py-3 border-2 border-blue-500 rounded-lg text-lg font-bold text-gray-900 focus:ring-0 focus:border-blue-600"
+                                placeholder="0"
+                                autoFocus
+                                required
+                            />
+                            <div className="absolute right-3 top-1/2 transform -translate-y-1/2 text-sm text-gray-400">
+                                units
+                            </div>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1">
+                            Enter the real number you counted on the shelf.
+                            We will calculate the adjustment ({parseInt(physicalCount || '0') - systemStock}).
+                        </p>
                     </div>
 
                     {/* Reason */}
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Reason (Optional)
+                            Reason for Adjustment
                         </label>
                         <textarea
                             value={reason}
                             onChange={(e) => setReason(e.target.value)}
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                            rows={3}
-                            placeholder="e.g., Physical count correction, Damage, Return"
+                            rows={2}
+                            placeholder="e.g. Audit correction, Damaged goods..."
                         />
                     </div>
 
@@ -1624,10 +1679,10 @@ const ManualAdjustmentModal: React.FC<ManualAdjustmentModalProps> = ({ stockItem
                         </button>
                         <button
                             type="submit"
-                            className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                            className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-semibold shadow-sm"
                             disabled={loading}
                         >
-                            {loading ? 'Adjusting...' : 'Confirm Adjustment'}
+                            {loading ? 'Saving...' : 'Save Physical Count'}
                         </button>
                     </div>
                 </form>

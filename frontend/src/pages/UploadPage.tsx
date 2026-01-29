@@ -704,7 +704,9 @@ const UploadPage: React.FC = () => {
             const statsRef = duplicateStatsRef.current;
             const skippedCount = statsRef?.skipped ?? (statusToUse as any).duplicateStats?.skipped ?? filesToSkip.length;
             const replacedCount = statsRef?.replaced ?? (statusToUse as any).duplicateStats?.replaced ?? filesToForceUpload.length;
-            const newCount = statsRef?.newFiles ?? (statusToUse as any).duplicateStats?.newFiles ?? (totalProcessed - replacedCount);
+            // Use logical OR || instead of ?? to ensure 0 (from initialization) falls back to calculation
+            // This fixes "New Files: 0" on happy path where statsRef.newFiles is 0 but never updated
+            const newCount = statsRef?.newFiles || (statusToUse as any).duplicateStats?.newFiles || (totalProcessed - replacedCount);
 
             const completionStats = {
                 totalUploaded: statsRef?.totalUploaded || totalProcessed,

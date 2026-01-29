@@ -61,6 +61,14 @@ class TransactionDelete(BaseModel):
     type: str  # "IN" or "OUT"
 
 
+class PhysicalStockUpdate(BaseModel):
+    """Update stock via physical count"""
+    part_number: str
+    physical_count: int
+    reason: Optional[str] = None
+
+
+
 def normalize_part_number(part_number: str) -> str:
     """Normalize part number for matching (remove spaces, lowercase)"""
     if not part_number:
@@ -129,11 +137,12 @@ async def get_stock_levels(
         
         # Add computed status field
         for item in items:
-            # Calculate actual on-hand stock (current_stock + old_stock)
+            # Calculate actual on-hand stock (current_stock + old_stock + manual_adjustment)
             # This matches the frontend display logic
             current = item.get("current_stock", 0)
             old = item.get("old_stock", 0) or 0
-            on_hand = current + old
+            manual = item.get("manual_adjustment", 0) or 0
+            on_hand = current + old + manual
             reorder = item.get("reorder_point", DEFAULT_REORDER_POINT)
             
             if on_hand <= 0:
@@ -725,7 +734,7 @@ def recalculate_stock_for_user(username: str):
     # 4. GET EXISTING STOCK LEVELS TO PRESERVE MANUAL EDITS (Old Stock only)
     # Priority and Reorder are now sourced from vendor_mapping_entries
     existing_stock_levels = db.client.table("stock_levels")\
-        .select("part_number, internal_item_name, old_stock")\
+        .select("part_number, internal_item_name, old_stock, manual_adjustment")\
         .eq("username", username)\
         .execute()
     
@@ -734,7 +743,8 @@ def recalculate_stock_for_user(username: str):
     for stock in (existing_stock_levels.data or []):
         key = (stock.get("part_number"), stock.get("internal_item_name"))
         existing_values[key] = {
-            "old_stock": stock.get("old_stock")
+            "old_stock": stock.get("old_stock"),
+            "manual_adjustment": stock.get("manual_adjustment")
         }
     
     logger.info(f"Found {len(existing_values)} existing stock levels to preserve")
@@ -937,13 +947,16 @@ def recalculate_stock_for_user(username: str):
 
         # Old Stock: Still from existing stock_levels (transactional snapshot)
         old_stock = preserved.get("old_stock")
+
+        # Manual Adjustment: Preserve existing value
+        manual_adjustment = preserved.get("manual_adjustment") or 0
         
         # customer_items comes ONLY from vendor_mapping_entries (single source of truth)
         # Already populated in data["customer_items"] from Step 1 (initialization with mappings)
         customer_items_str = ", ".join(data.get("customer_items", [])) if data.get("customer_items") else None
         
-        # Calculate ACTUAL ON HAND (including old_stock for value calculation)
-        stock_on_hand = current_stock + (old_stock or 0)
+        # Calculate ACTUAL ON HAND (including old_stock and manual_adjustment)
+        stock_on_hand = current_stock + (old_stock or 0) + manual_adjustment
         
         # Calculate value using ON HAND (not just current_stock)
         unit_value = data.get("vendor_rate") or 0
@@ -960,6 +973,7 @@ def recalculate_stock_for_user(username: str):
             "total_out": round(data["total_out"], 2),
             "reorder_point": reorder_point,  
             "old_stock": old_stock,  
+            "manual_adjustment": manual_adjustment,
             "priority": priority,
             "vendor_rate": data.get("vendor_rate"),
             "customer_rate": data.get("customer_rate"),
@@ -991,6 +1005,7 @@ def recalculate_stock_for_user(username: str):
                 "total_out": 0,
                 "reorder_point": existing_item.get("reorder_point") or DEFAULT_REORDER_POINT,
                 "old_stock": existing_item.get("old_stock"),
+                "manual_adjustment": existing_item.get("manual_adjustment") or 0,
                 "priority": existing_item.get("priority"),
                 "vendor_rate": None,
                 "customer_rate": None,
@@ -1230,6 +1245,73 @@ async def adjust_stock(
         raise
     except Exception as e:
         logger.error(f"Error adjusting stock: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/update-stock-adjustment")
+async def update_stock_adjustment(
+    update: PhysicalStockUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Update stock adjustment based on physical count.
+    Adjustment = UserPhysicalCount - (Total IN - Total OUT + Opening Stock)
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        # Get current stock level info
+        stock_query = db.client.table("stock_levels")\
+            .select("*")\
+            .eq("username", username)\
+            .eq("part_number", update.part_number)\
+            .execute()
+            
+        if not stock_query.data:
+            raise HTTPException(status_code=404, detail="Stock item not found")
+            
+        item = stock_query.data[0]
+        
+        # Calculate current system stock (IN - OUT + Old Stock)
+        current_in_out = item.get("current_stock", 0)  # Total IN - Total OUT
+        opening_stock = item.get("old_stock", 0) or 0
+        system_stock_without_adj = current_in_out + opening_stock
+        
+        # Calculate required adjustment
+        # Physical = System + Adjustment
+        # Adjustment = Physical - System
+        adjustment_value = update.physical_count - system_stock_without_adj
+        
+        # Update database
+        update_data = {
+            "manual_adjustment": int(adjustment_value),
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        # Recalculate total value with new on-hand
+        new_on_hand = update.physical_count
+        unit_value = item.get("unit_value", 0) or 0
+        update_data["total_value"] = round(new_on_hand * unit_value, 2)
+        
+        db.client.table("stock_levels")\
+            .update(update_data)\
+            .eq("id", item["id"])\
+            .execute()
+            
+        logger.info(f"Updated stock adjustment for {update.part_number}: Physical={update.physical_count}, Adj={adjustment_value}")
+        
+        return {
+            "success": True,
+            "message": "Stock adjustment updated successfully",
+            "adjustment": adjustment_value,
+            "physical_count": update.physical_count
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating stock adjustment: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
