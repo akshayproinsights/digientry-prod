@@ -110,9 +110,10 @@ const Sidebar: React.FC = () => {
                 );
             }
             if (sales.isUploading || sales.processingCount > 0) {
+                const completed = (sales.totalProcessing || 0) - sales.processingCount;
                 return (
                     <span className="bg-blue-100 text-blue-600 text-xs font-semibold px-2 py-0.5 rounded-full ml-auto">
-                        Processing {sales.processingCount}/{sales.totalProcessing || '?'}
+                        Processing {completed}/{sales.totalProcessing || '?'}
                     </span>
                 );
             }

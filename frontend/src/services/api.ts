@@ -174,8 +174,9 @@ export const reviewAPI = {
             }
 
             // CRITICAL FIX: Use apiClient.defaults.baseURL instead of import.meta.env.VITE_API_URL
-            // This ensures SSE uses the same base URL as regular API calls (production or local)
-            const baseURL = apiClient.defaults.baseURL || 'http://localhost:8000';
+            // Handle case where baseURL is '/' (common in prod) to avoid '//api' which browsers treat as protocol-relative host
+            const rawBaseURL = apiClient.defaults.baseURL || 'http://localhost:8000';
+            const baseURL = rawBaseURL.endsWith('/') ? rawBaseURL.slice(0, -1) : rawBaseURL;
             const url = `${baseURL}/api/review/sync-finish/stream?token=${encodeURIComponent(token)}`;
             const eventSource = new EventSource(url);
 

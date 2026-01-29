@@ -17,6 +17,7 @@ const UploadPage: React.FC = () => {
     const [processingStatus, setProcessingStatus] = useState<any>(null);
     const [, setPollingInterval] = useState<number | null>(null);
     const intervalRef = React.useRef<number | null>(null); // Ref to track interval for cleanup
+    const duplicateStatsRef = React.useRef<{ totalUploaded: number; replaced: number; skipped: number; newFiles: number } | null>(null);
 
     // Upload tracking for bulk uploads
     const [uploadedCount, setUploadedCount] = useState(0);
@@ -59,9 +60,14 @@ const UploadPage: React.FC = () => {
             if (savedCompletion) { // REMOVED CLOSURE BUG: !isProcessing && !isUploading
                 try {
                     const completionData = JSON.parse(savedCompletion);
-                    console.log('✅ [UPLOAD-PAGE] Found completion status, loading:', completionData);
-
-                    setProcessingStatus(completionData);
+                    if (JSON.stringify(processingStatus) !== JSON.stringify(completionData)) {
+                        console.log('🔄 [DEBUG] Found completion status in background, loading...');
+                        setProcessingStatus(completionData);
+                        // Restore ref from saved stats
+                        if (completionData.duplicateStats) {
+                            duplicateStatsRef.current = completionData.duplicateStats;
+                        }
+                    }
                     setIsProcessing(false);
                     setIsUploading(false);
                     setFiles([]);
@@ -373,7 +379,10 @@ const UploadPage: React.FC = () => {
             setUploadedCount(0);
             setUploadStartTime(Date.now());
             setEstimatedTimeRemaining(null);
-            setDuplicateStats({ totalUploaded: totalFiles, replaced: 0, skipped: 0, newFiles: 0 });
+            setEstimatedTimeRemaining(null);
+            const initialStats = { totalUploaded: totalFiles, replaced: 0, skipped: 0, newFiles: 0 };
+            setDuplicateStats(initialStats);
+            duplicateStatsRef.current = initialStats;
 
             let fileKeys: string[] = [];
             const BATCH_SIZE = 5;
@@ -466,6 +475,8 @@ const UploadPage: React.FC = () => {
 
                     const newFilesProcessed = status.progress?.processed || 0;
                     setDuplicateStats(prev => ({ ...prev, newFiles: newFilesProcessed }));
+                    duplicateStatsRef.current = { ...(duplicateStatsRef.current || { totalUploaded: 0, replaced: 0, skipped: 0, newFiles: 0 }), newFiles: newFilesProcessed };
+
 
                     // Set first duplicate info - check if it has existing_invoice
                     const firstDup = duplicates[0];
@@ -532,7 +543,12 @@ const UploadPage: React.FC = () => {
         const updatedSkip = [...filesToSkip, currentDup.file_key];
         setFilesToSkip(updatedSkip);
         setSalesStatus({ reviewCount: Math.max(0, duplicateQueue.length - (currentDuplicateIndex + 1)) });
-        setDuplicateStats(prev => ({ ...prev, skipped: prev.skipped + 1 }));
+        setSalesStatus({ reviewCount: Math.max(0, duplicateQueue.length - (currentDuplicateIndex + 1)) });
+        setDuplicateStats(prev => {
+            const next = { ...prev, skipped: prev.skipped + 1 };
+            duplicateStatsRef.current = next;
+            return next;
+        });
         moveToNextDuplicate(updatedSkip, filesToForceUpload, (window as any).__temp_r2_keys || []);
     };
 
@@ -541,7 +557,12 @@ const UploadPage: React.FC = () => {
         const updatedForceUpload = [...filesToForceUpload, currentDup.file_key];
         setFilesToForceUpload(updatedForceUpload);
         setSalesStatus({ reviewCount: Math.max(0, duplicateQueue.length - (currentDuplicateIndex + 1)) });
-        setDuplicateStats(prev => ({ ...prev, replaced: prev.replaced + 1 }));
+        setSalesStatus({ reviewCount: Math.max(0, duplicateQueue.length - (currentDuplicateIndex + 1)) });
+        setDuplicateStats(prev => {
+            const next = { ...prev, replaced: prev.replaced + 1 };
+            duplicateStatsRef.current = next;
+            return next;
+        });
         moveToNextDuplicate(filesToSkip, updatedForceUpload, (window as any).__temp_r2_keys || []);
     };
 
@@ -604,6 +625,12 @@ const UploadPage: React.FC = () => {
                         newFiles: nonDuplicateFiles.length
                     }
                 });
+                duplicateStatsRef.current = {
+                    totalUploaded: allR2Keys.length,
+                    skipped: _skipList.length,
+                    replaced: forceUploadList.length,
+                    newFiles: nonDuplicateFiles.length
+                };
 
                 // Send all files for processing
                 // CRITICAL: Force upload MUST be true because files are already in R2
@@ -673,19 +700,27 @@ const UploadPage: React.FC = () => {
             // Calculate summary for user clarity
             const totalProcessed = statusToUse.progress.processed || 0;
 
-            // Use stored stats if available (set when processing started), otherwise fall back to state
-            const skippedCount = (statusToUse as any).duplicateStats?.skipped ?? filesToSkip.length;
-            const replacedCount = (statusToUse as any).duplicateStats?.replaced ?? filesToForceUpload.length;
-            const newCount = (statusToUse as any).duplicateStats?.newFiles ?? (totalProcessed - replacedCount);
+            // Use stored stats from REF (reliable across closures), otherwise fall back to state
+            const statsRef = duplicateStatsRef.current;
+            const skippedCount = statsRef?.skipped ?? (statusToUse as any).duplicateStats?.skipped ?? filesToSkip.length;
+            const replacedCount = statsRef?.replaced ?? (statusToUse as any).duplicateStats?.replaced ?? filesToForceUpload.length;
+            const newCount = statsRef?.newFiles ?? (statusToUse as any).duplicateStats?.newFiles ?? (totalProcessed - replacedCount);
+
+            const completionStats = {
+                totalUploaded: statsRef?.totalUploaded || totalProcessed,
+                skipped: skippedCount,
+                replaced: replacedCount,
+                newFiles: newCount
+            };
 
             let summaryMessage = `Successfully processed ${totalProcessed} invoice${totalProcessed !== 1 ? 's' : ''}`;
 
             // Show breakdown if there were any duplicates (replaced OR skipped)
-            if (replacedCount > 0 || skippedCount > 0) {
+            if (completionStats.replaced > 0 || completionStats.skipped > 0) {
                 const parts = [];
-                if (newCount > 0) parts.push(`${newCount} new`);
-                if (replacedCount > 0) parts.push(`${replacedCount} replaced`);
-                if (skippedCount > 0) parts.push(`${skippedCount} skipped`);
+                if (completionStats.newFiles > 0) parts.push(`${completionStats.newFiles} new`);
+                if (completionStats.replaced > 0) parts.push(`${completionStats.replaced} replaced`);
+                if (completionStats.skipped > 0) parts.push(`${completionStats.skipped} skipped`);
                 if (parts.length > 0) {
                     summaryMessage += ` (${parts.join(', ')})`;
                 }
