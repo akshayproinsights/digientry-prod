@@ -16,11 +16,6 @@ const Layout: React.FC = () => {
     // State for page-specific header actions (buttons, etc.)
     const [headerActions, setHeaderActions] = useState<React.ReactNode>(null);
 
-    // Reset header actions when route changes
-    React.useEffect(() => {
-        setHeaderActions(null);
-    }, [location.pathname]);
-
     // Get time-based greeting (Good morning/afternoon/evening)
     const getTimeBasedGreeting = () => {
         const hour = new Date().getHours();

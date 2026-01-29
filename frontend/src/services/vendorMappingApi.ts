@@ -32,6 +32,8 @@ export interface VendorMappingEntry {
     extracted_at?: string;
     created_at?: string;
     updated_at?: string;
+    system_qty?: number | null; // Added
+    variance?: number | null;   // Added
 }
 
 export interface ExtractedRow {
@@ -42,6 +44,8 @@ export interface ExtractedRow {
     reorder?: number | null;
     notes?: string | null;
     confidence: number;
+    system_qty?: number | null; // Added
+    variance?: number | null;   // Added
 }
 
 export const vendorMappingAPI = {
@@ -72,6 +76,54 @@ export const vendorMappingAPI = {
 
         return response.data;
     },
+
+    /**
+     * Upload multiple scanned mapping sheets (Bulk)
+     */
+    uploadScans: async (files: File[], onProgress?: (progressEvent: any) => void): Promise<{
+        success: boolean;
+        uploaded_files: string[];
+        message: string;
+    }> => {
+        const formData = new FormData();
+        files.forEach(file => formData.append('files', file));
+
+        const response = await apiClient.post('/api/vendor-mapping/upload-scans', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            onUploadProgress: onProgress,
+        });
+
+        return response.data;
+    },
+
+    /**
+     * Start background processing for uploaded scans
+     */
+    processScans: async (fileKeys: string[]): Promise<{
+        task_id: string;
+        status: string;
+        message: string;
+    }> => {
+        const response = await apiClient.post('/api/vendor-mapping/process-scans', {
+            file_keys: fileKeys
+        });
+        return response.data;
+    },
+
+    /**
+     * Get processing status
+     */
+    getProcessStatus: async (taskId: string): Promise<{
+        task_id: string;
+        status: string;
+        progress: any;
+        message: string;
+        rows: ExtractedRow[];
+    }> => {
+        const response = await apiClient.get(`/api/vendor-mapping/process/status/${taskId}`);
+        return response.data;
+    },
+
 
     /**
      * Extract handwritten data from scanned image using Gemini

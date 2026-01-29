@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
-import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2, CheckSquare, Square, Plus, ShoppingCart } from 'lucide-react';
+import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2, CheckSquare, Square, Plus, ShoppingCart, Loader2 } from 'lucide-react';
 import { purchaseOrderAPI } from '../services/purchaseOrderAPI';
 import DeleteConfirmModal from '../components/DeleteConfirmModal';
 import {
@@ -214,7 +214,7 @@ const CurrentStockPage: React.FC = () => {
         // Show "Mapped" view only if URL has filter=mapped
         return searchParams.get('filter') === 'mapped';
     });
-    const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
+
     const [showHistoryModal, setShowHistoryModal] = useState(false);
     const [selectedPartHistory, setSelectedPartHistory] = useState<{ partNumber: string; itemName: string } | null>(null);
     const [isCalculating, setIsCalculating] = useState(false);
@@ -247,7 +247,7 @@ const CurrentStockPage: React.FC = () => {
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [itemToDelete, setItemToDelete] = useState<StockLevel | null>(null);
     const [addingToPO, setAddingToPO] = useState<Set<string>>(new Set());
-    const [selectedAdjustmentItem, setSelectedAdjustmentItem] = useState<StockLevel | null>(null);
+
 
     const searchTimeoutRef = useRef<{ [key: number]: number }>({});
     const dropdownRef = useRef<HTMLDivElement>(null);
@@ -484,6 +484,46 @@ const CurrentStockPage: React.FC = () => {
         }
     };
 
+    // Update Physical Stock Handler (for SmartEditableCell)
+    const handleUpdatePhysicalStock = async (id: number, field: string, value: number) => {
+        const item = stockItems.find(i => i.id === id);
+        if (!item) return;
+
+        const fieldKey = `${id}-physical_stock`;
+
+        // Mark cell as active
+        setActiveEditCells(prev => new Set(prev).add(fieldKey));
+
+        // Calculate expected adjustment relative to system stock (excluding manual adjustment)
+        // Calculate expected adjustment relative to system stock (excluding manual adjustment)
+        // Current Formula: On Hand = current_stock + manual_adjustment
+        // New Manual Adjustment = UserPhysicalCount - current_stock
+        const systemStock = (item.current_stock || 0);
+        const newAdjustment = value - systemStock;
+
+        // Optimistic Update: Update manual_adjustment locally so the total matches what user typed
+        setStockItems(prev => prev.map(i =>
+            i.id === id ? { ...i, manual_adjustment: newAdjustment } : i
+        ));
+
+        try {
+            await updateStockAdjustment(item.part_number, value);
+        } catch (error) {
+            console.error('Error updating physical stock:', error);
+            // Revert validation is up to the cell (it turns red)
+            // But we should probably revert the state?
+            // SmartEditableCell expects us to throw if failed.
+            throw error;
+        } finally {
+            // Remove cell from active edits
+            setActiveEditCells(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(fieldKey);
+                return newSet;
+            });
+        }
+    };
+
     // Handle Priority Field Update (non-numeric field)
     const handleFieldUpdate = async (id: number, field: 'priority', value: string) => {
         const fieldKey = `${id}-${field}`;
@@ -695,7 +735,7 @@ const CurrentStockPage: React.FC = () => {
         if (query.trim().length > 0) {
             return searchResults[itemId] || [];
         }
-        return suggestions[itemId]?.slice(0, 7) || [];
+        return suggestions[itemId]?.slice(0, 50) || [];
     };
 
     // Upload mapping sheet handler
@@ -755,10 +795,10 @@ const CurrentStockPage: React.FC = () => {
         }
     };
 
-    // Handle Export PDF (unmapped items only)
+    // Handle Export PDF (Inventory Count Sheet)
     const handleExportPDF = async () => {
         try {
-            const response = await apiClient.get('/api/stock/export-unmapped-pdf', {
+            const response = await apiClient.get('/api/stock/export-inventory-count-sheet', {
                 params: {
                     search: searchQuery || undefined,
                     status_filter: statusFilter !== 'all' ? statusFilter : undefined,
@@ -770,7 +810,7 @@ const CurrentStockPage: React.FC = () => {
             const url = window.URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `unmapped_stock_items_${new Date().toISOString().split('T')[0]}.pdf`;  // Use direct property instead of setAttribute
+            link.download = `inventory_count_sheet_${new Date().toISOString().split('T')[0]}.pdf`;
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -1072,6 +1112,36 @@ const CurrentStockPage: React.FC = () => {
                         <option value="out_of_stock">Out of Stock</option>
                     </select>
 
+                    {/* Action Buttons - Upload/Download */}
+                    <div className="flex gap-2 ml-auto">
+                        <div className="relative">
+                            <input
+                                type="file"
+                                id="mapping-sheet-upload"
+                                className="hidden"
+                                onChange={handleUploadMappingSheet}
+                                accept=".pdf,.png,.jpg,.jpeg"
+                                disabled={isUploading}
+                            />
+                            <label
+                                htmlFor="mapping-sheet-upload"
+                                className={`flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 cursor-pointer transition-colors ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            >
+                                {isUploading ? <Loader2 className="animate-spin" size={18} /> : <Upload className="text-gray-500" size={18} />}
+                                <span className="text-sm font-medium">Upload Mapping</span>
+                            </label>
+                        </div>
+
+                        <button
+                            onClick={handleExportPDF}
+                            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                            title="Download Inventory Count Sheet"
+                        >
+                            <Printer className="text-gray-500" size={18} />
+                            <span className="text-sm font-medium">Download Inventory Mapping</span>
+                        </button>
+                    </div>
+
                 </div>
             </div>
 
@@ -1118,10 +1188,7 @@ const CurrentStockPage: React.FC = () => {
                                     <th className="px-2 py-2 text-center text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap">
                                         Status
                                     </th>
-                                    {/* Col 6: Opening - 1% */}
-                                    <th className="px-2 py-2 text-right text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap bg-gray-50">
-                                        Opening
-                                    </th>
+
                                     {/* Col 7: In - 1% */}
                                     <th className="px-2 py-2 text-right text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap">
                                         In
@@ -1220,7 +1287,7 @@ const CurrentStockPage: React.FC = () => {
                                                                 }}
                                                                 onBlur={() => handleCustomerItemBlur(item)}
                                                                 placeholder={hasCustomerItem ? "" : "Select..."}
-                                                                className={`w-full px-2 py-1 border rounded text-[11px] font-medium transition-colors truncate block ${hasCustomerItem
+                                                                className={`w-full px-2 py-1.5 border rounded text-sm font-medium transition-colors truncate block ${hasCustomerItem
                                                                     ? 'border-green-500 bg-green-50 text-green-700 pr-5'
                                                                     : 'border-amber-400 border-dashed bg-white text-gray-600 pr-2'
                                                                     }`}
@@ -1253,7 +1320,7 @@ const CurrentStockPage: React.FC = () => {
 
                                                             {/* Dropdown */}
                                                             {openDropdowns[item.id] && (
-                                                                <div className="absolute z-20 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-xl max-h-72 overflow-y-auto left-0">
+                                                                <div className="absolute z-50 mt-1 w-96 bg-white border border-gray-200 rounded-lg shadow-xl max-h-60 overflow-y-auto left-0">
                                                                     {loadingSuggestions[item.id] ? (
                                                                         <div className="p-4 text-center text-gray-500 text-sm">
                                                                             Loading suggestions...
@@ -1338,22 +1405,7 @@ const CurrentStockPage: React.FC = () => {
                                                     </div>
                                                 </td>
 
-                                                {/* Col 6: Opening - 1% Right Gray */}
-                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-sm text-right bg-gray-50">
-                                                    <div className="w-12 ml-auto">
-                                                        <SmartEditableCell
-                                                            value={item.old_stock || 0}
-                                                            itemId={item.id}
-                                                            field="old_stock"
-                                                            onSave={handleSmartCellSave}
-                                                            isEditing={editingStockId === item.id}
-                                                            onEditStart={() => setEditingStockId(item.id)}
-                                                            onEditEnd={() => setEditingStockId(null)}
-                                                            min={0}
-                                                            step={1}
-                                                        />
-                                                    </div>
-                                                </td>
+
 
                                                 {/* Col 7: In - 1% Right */}
                                                 <td className="px-2 py-2 w-[1%] whitespace-nowrap text-sm text-right">
@@ -1369,23 +1421,23 @@ const CurrentStockPage: React.FC = () => {
                                                     </span>
                                                 </td>
 
-                                                {/* Col 9: On Hand - 1% Right - Result - Clickable */}
-                                                <td
-                                                    className="px-2 py-2 w-[1%] whitespace-nowrap text-right cursor-pointer hover:bg-blue-50 transition-colors group relative"
-                                                    onClick={() => {
-                                                        setSelectedAdjustmentItem(item);
-                                                        setShowAdjustmentModal(true);
-                                                    }}
-                                                    title="Click to adjust physical stock"
-                                                >
-                                                    <span className={`text-lg font-black tabular-nums border-b border-dotted border-gray-400 ${Math.round((item.current_stock || 0) + (item.old_stock || 0) + (item.manual_adjustment || 0)) < 0
-                                                        ? 'text-red-600'
-                                                        : 'text-gray-900'
-                                                        }`}>
-                                                        {Math.round((item.current_stock || 0) + (item.old_stock || 0) + (item.manual_adjustment || 0))}
-                                                    </span>
+                                                {/* Col 9: On Hand - 1% Right - Result - Editable */}
+                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-right">
+                                                    <div className="w-20 ml-auto font-black text-lg">
+                                                        <SmartEditableCell
+                                                            value={Math.round((item.current_stock || 0) + (item.manual_adjustment || 0))}
+                                                            itemId={item.id}
+                                                            field="physical_count"
+                                                            onSave={handleUpdatePhysicalStock}
+                                                            isEditing={editingStockId === item.id}
+                                                            onEditStart={() => setEditingStockId(item.id)}
+                                                            onEditEnd={() => setEditingStockId(null)}
+                                                            min={0}
+                                                            step={1}
+                                                        />
+                                                    </div>
                                                     {item.manual_adjustment !== 0 && (
-                                                        <span className="absolute top-0 right-0 text-[8px] bg-amber-100 text-amber-800 px-1 rounded-full">
+                                                        <span className="absolute top-1 right-1 text-[8px] bg-amber-100 text-amber-800 px-1 rounded-full pointer-events-none">
                                                             Adj
                                                         </span>
                                                     )}
@@ -1441,23 +1493,7 @@ const CurrentStockPage: React.FC = () => {
                 )}
             </div>
 
-            {/* Manual Adjustment Modal */}
-            {/* Manual Adjustment Modal */}
-            {showAdjustmentModal && (
-                <ManualAdjustmentModal
-                    stockItems={stockItems}
-                    initialItem={selectedAdjustmentItem}
-                    onClose={() => {
-                        setShowAdjustmentModal(false);
-                        setSelectedAdjustmentItem(null);
-                    }}
-                    onSuccess={() => {
-                        setShowAdjustmentModal(false);
-                        setSelectedAdjustmentItem(null);
-                        loadData();
-                    }}
-                />
-            )}
+
 
             {/* Transaction History Modal */}
             {showHistoryModal && selectedPartHistory && (
@@ -1509,187 +1545,7 @@ const CurrentStockPage: React.FC = () => {
     );
 };
 
-// Manual Adjustment Modal Component
-interface ManualAdjustmentModalProps {
-    stockItems: StockLevel[];
-    onClose: () => void;
-    onSuccess: () => void;
-    initialItem?: StockLevel | null;
-}
 
-const ManualAdjustmentModal: React.FC<ManualAdjustmentModalProps> = ({ stockItems, onClose, onSuccess, initialItem }) => {
-    const [selectedPart, setSelectedPart] = useState(initialItem?.part_number || '');
-    const [physicalCount, setPhysicalCount] = useState<string>(
-        initialItem ?
-            // Default to current calculated physical stock
-            Math.round((initialItem.current_stock || 0) + (initialItem.old_stock || 0) + (initialItem.manual_adjustment || 0)).toString()
-            : ''
-    );
-    const [reason, setReason] = useState('');
-    const [loading, setLoading] = useState(false);
-
-    // Effect to update if initialItem changes
-    useEffect(() => {
-        if (initialItem) {
-            setSelectedPart(initialItem.part_number);
-            const currentPhys = Math.round((initialItem.current_stock || 0) + (initialItem.old_stock || 0) + (initialItem.manual_adjustment || 0));
-            setPhysicalCount(currentPhys.toString());
-        }
-    }, [initialItem]);
-
-    // Find currently selected item to show system stats
-    const selectedItem = stockItems.find(i => i.part_number === selectedPart);
-    const systemStock = selectedItem ? Math.round((selectedItem.current_stock || 0) + (selectedItem.old_stock || 0)) : 0;
-    const currentAdjustment = selectedItem?.manual_adjustment || 0;
-
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-
-        if (!selectedPart || physicalCount === '') {
-            alert('Please fill in all required fields');
-            return;
-        }
-
-        const count = parseFloat(physicalCount);
-        if (isNaN(count) || count < 0) {
-            alert('Physical count must be a non-negative number');
-            return;
-        }
-
-        try {
-            setLoading(true);
-            const result = await updateStockAdjustment(
-                selectedPart,
-                count,
-                reason || undefined
-            );
-
-            alert(
-                `Stock adjusted successfully!\n` +
-                `System Value: ${Math.round(systemStock)}\n` +
-                `New Adjustment: ${result.adjustment}\n` +
-                `Final Physical Count: ${result.physical_count}`
-            );
-            onSuccess();
-        } catch (error: any) {
-            console.error('Error adjusting stock:', error);
-            alert(error.response?.data?.detail || 'Failed to adjust stock');
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
-                <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-bold text-gray-900">Physical Stock Adjustment</h2>
-                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-                        <X size={24} />
-                    </button>
-                </div>
-
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    {/* Part Select */}
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Part Number
-                        </label>
-                        <select
-                            value={selectedPart}
-                            onChange={(e) => setSelectedPart(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-gray-50"
-                            disabled={!!initialItem}
-                        >
-                            <option value="">-- Select Part --</option>
-                            {stockItems.map((item) => (
-                                <option key={item.id} value={item.part_number}>
-                                    {item.part_number} - {item.internal_item_name}
-                                </option>
-                            ))}
-                        </select>
-                    </div>
-
-                    {/* Stats Display */}
-                    {selectedItem && (
-                        <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 space-y-2">
-                            <div className="flex justify-between text-sm">
-                                <span className="text-gray-600">System Calculated (In-Out):</span>
-                                <span className="font-medium">{Math.round(selectedItem.current_stock || 0)}</span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                                <span className="text-gray-600">Opening Stock:</span>
-                                <span className="font-medium">{selectedItem.old_stock || 0}</span>
-                            </div>
-                            <div className="flex justify-between text-sm border-t border-blue-200 pt-2">
-                                <span className="text-blue-800 font-semibold">Total System Stock:</span>
-                                <span className="font-bold text-blue-800">{systemStock}</span>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Physical Count Input */}
-                    <div>
-                        <label className="block text-sm font-medium text-gray-900 mb-1">
-                            Actual Physical Count <span className="text-red-500">*</span>
-                        </label>
-                        <div className="relative">
-                            <input
-                                type="number"
-                                value={physicalCount}
-                                onChange={(e) => setPhysicalCount(e.target.value)}
-                                className="w-full pl-3 pr-4 py-3 border-2 border-blue-500 rounded-lg text-lg font-bold text-gray-900 focus:ring-0 focus:border-blue-600"
-                                placeholder="0"
-                                autoFocus
-                                required
-                            />
-                            <div className="absolute right-3 top-1/2 transform -translate-y-1/2 text-sm text-gray-400">
-                                units
-                            </div>
-                        </div>
-                        <p className="text-xs text-gray-500 mt-1">
-                            Enter the real number you counted on the shelf.
-                            We will calculate the adjustment ({parseInt(physicalCount || '0') - systemStock}).
-                        </p>
-                    </div>
-
-                    {/* Reason */}
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Reason for Adjustment
-                        </label>
-                        <textarea
-                            value={reason}
-                            onChange={(e) => setReason(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                            rows={2}
-                            placeholder="e.g. Audit correction, Damaged goods..."
-                        />
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex gap-3 pt-4">
-                        <button
-                            type="button"
-                            onClick={onClose}
-                            className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
-                            disabled={loading}
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            type="submit"
-                            className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-semibold shadow-sm"
-                            disabled={loading}
-                        >
-                            {loading ? 'Saving...' : 'Save Physical Count'}
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    );
-};
 
 // Transaction History Modal Component
 interface TransactionHistoryModalProps {

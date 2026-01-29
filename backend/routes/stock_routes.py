@@ -140,9 +140,10 @@ async def get_stock_levels(
             # Calculate actual on-hand stock (current_stock + old_stock + manual_adjustment)
             # This matches the frontend display logic
             current = item.get("current_stock", 0)
-            old = item.get("old_stock", 0) or 0
+            # old_stock is now merged into manual_adjustment, so we ignore it or it is 0
+            # old = item.get("old_stock", 0) or 0
             manual = item.get("manual_adjustment", 0) or 0
-            on_hand = current + old + manual
+            on_hand = current + manual
             reorder = item.get("reorder_point", DEFAULT_REORDER_POINT)
             
             if on_hand <= 0:
@@ -187,14 +188,15 @@ async def get_stock_summary(
         # Calculate summary stats
         total_stock_value = sum(item.get("total_value", 0) or 0 for item in items)
         
-        # Count items using on_hand (current_stock + old_stock) vs reorder_point
+        # Count items using on_hand (current_stock + manual_adjustment) vs reorder_point
+        # Note: old_stock is deprecated and merged into manual_adjustment
         low_stock_count = sum(
             1 for item in items 
-            if 0 < (item.get("current_stock", 0) + (item.get("old_stock", 0) or 0)) < item.get("reorder_point", DEFAULT_REORDER_POINT)
+            if 0 < (item.get("current_stock", 0) + (item.get("manual_adjustment", 0) or 0)) < item.get("reorder_point", DEFAULT_REORDER_POINT)
         )
         out_of_stock_count = sum(
             1 for item in items 
-            if (item.get("current_stock", 0) + (item.get("old_stock", 0) or 0)) <= 0
+            if (item.get("current_stock", 0) + (item.get("manual_adjustment", 0) or 0)) <= 0
         )
         
         return {
@@ -743,7 +745,7 @@ def recalculate_stock_for_user(username: str):
     for stock in (existing_stock_levels.data or []):
         key = (stock.get("part_number"), stock.get("internal_item_name"))
         existing_values[key] = {
-            "old_stock": stock.get("old_stock"),
+            # "old_stock": stock.get("old_stock"),  # Deprecated
             "manual_adjustment": stock.get("manual_adjustment")
         }
     
@@ -945,8 +947,8 @@ def recalculate_stock_for_user(username: str):
         if reorder_point is None:
              reorder_point = DEFAULT_REORDER_POINT
 
-        # Old Stock: Still from existing stock_levels (transactional snapshot)
-        old_stock = preserved.get("old_stock")
+        # Old Stock: Deprecated/Unused
+        old_stock = 0 
 
         # Manual Adjustment: Preserve existing value
         manual_adjustment = preserved.get("manual_adjustment") or 0
@@ -955,8 +957,8 @@ def recalculate_stock_for_user(username: str):
         # Already populated in data["customer_items"] from Step 1 (initialization with mappings)
         customer_items_str = ", ".join(data.get("customer_items", [])) if data.get("customer_items") else None
         
-        # Calculate ACTUAL ON HAND (including old_stock and manual_adjustment)
-        stock_on_hand = current_stock + (old_stock or 0) + manual_adjustment
+        # Calculate ACTUAL ON HAND (including manual_adjustment, ignoring old_stock)
+        stock_on_hand = current_stock + manual_adjustment
         
         # Calculate value using ON HAND (not just current_stock)
         unit_value = data.get("vendor_rate") or 0
@@ -1273,10 +1275,10 @@ async def update_stock_adjustment(
             
         item = stock_query.data[0]
         
-        # Calculate current system stock (IN - OUT + Old Stock)
+        # Calculate current system stock (IN - OUT)
+        # Note: old_stock is removed from this calculation as it's now part of manual_adjustment logic
         current_in_out = item.get("current_stock", 0)  # Total IN - Total OUT
-        opening_stock = item.get("old_stock", 0) or 0
-        system_stock_without_adj = current_in_out + opening_stock
+        system_stock_without_adj = current_in_out
         
         # Calculate required adjustment
         # Physical = System + Adjustment
@@ -1315,15 +1317,15 @@ async def update_stock_adjustment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/export-unmapped-pdf")
-async def export_unmapped_stock_pdf(
+@router.get("/export-inventory-count-sheet")
+async def export_inventory_count_sheet(
     search: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(None),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    Export only unmapped stock items (where customer_items is NULL or empty) to PDF.
-    Uses same format asexisting vendor invoice PDFs.
+    Export ALL stock items to a PDF Inventory Count Sheet.
+    Includes columns for: #, Vendor Description, Part Number, Customer Item, Priority, Actual Stock (Blank), Reorder (Blank).
     """
     username = current_user.get("username")
     db = get_database_client()
@@ -1342,30 +1344,25 @@ async def export_unmapped_stock_pdf(
                 f"vendor_description.ilike.%{search}%"
             )
         
-        query = query.order("part_number")
+        # Sort Alphabetical by Customer Item Name (primary) or Vendor Description (secondary)
+        query = query.order("internal_item_name", nullsfirst=False).order("vendor_description", nullsfirst=False)
+        
         response = query.execute()
-        
         items = response.data or []
-        
-        # Filter to only unmapped items (customer_items is NULL or empty)
-        unmapped_items = [
-            item for item in items 
-            if not item.get("customer_items") or item.get("customer_items").strip() == ""
-        ]
         
         # Apply status filter if provided
         if status_filter and status_filter != "all":
             if status_filter == "out_of_stock":
-                unmapped_items = [item for item in unmapped_items if item.get("current_stock", 0) <= 0]
+                items = [item for item in items if item.get("current_stock", 0) <= 0]
             elif status_filter == "low_stock":
-                unmapped_items = [item for item in unmapped_items if 0 < item.get("current_stock", 0) < item.get("reorder_point", DEFAULT_REORDER_POINT)]
+                items = [item for item in items if 0 < item.get("current_stock", 0) < item.get("reorder_point", DEFAULT_REORDER_POINT)]
             elif status_filter == "in_stock":
-                unmapped_items = [item for item in unmapped_items if item.get("current_stock", 0) >= item.get("reorder_point", DEFAULT_REORDER_POINT)]
+                items = [item for item in items if item.get("current_stock", 0) >= item.get("reorder_point", DEFAULT_REORDER_POINT)]
         
-        if not unmapped_items:
+        if not items:
             raise HTTPException(
                 status_code=404, 
-                detail="No unmapped items found matching the filters"
+                detail="No items found matching the filters"
             )
         
         # Create PDF in memory - PORTRAIT orientation with proper spacing
@@ -1395,16 +1392,13 @@ async def export_unmapped_stock_pdf(
         
         
         # Title
-        title = Paragraph("<b>Vendor Mapping Sheet</b>", title_style)
+        title = Paragraph("<b>Inventory Count Sheet</b>", title_style)
         elements.append(title)
         
         # Date and instructions
         date_text = f"Generated: {datetime.now().strftime('%m/%d/%Y')}"
         date = Paragraph(date_text, styles['Normal'])
         elements.append(date)
-        
-        instructions = Paragraph("Fill in Customer Item, Stock, and Reorder columns by hand", styles['Normal'])
-        elements.append(instructions)
         
         # Priority explanation for Indian SMB users
         priority_note = Paragraph(
@@ -1416,47 +1410,52 @@ async def export_unmapped_stock_pdf(
         elements.append(Spacer(1, 0.3*inch))
         
         # Table data
+        # Headers
         table_data = [
-            ['#', 'Vendor Description', 'Part Number', 'Customer Item', 'Priority', 'Stock', 'Reorder']
+            ['#', 'Vendor Description', 'Part Number', 'Customer Item', 'Priority', 'Actual Stock', 'Reorder']
         ]
 
-        for idx, item in enumerate(unmapped_items, 1):
+        for idx, item in enumerate(items, 1):
+            customer_item = item.get('customer_items', '') or ''
+            # Handle list format string if it looks like one "['Item A']" -> "Item A"
+            if customer_item.startswith("['") and customer_item.endswith("']"):
+                 customer_item = customer_item[2:-2]
+            
             table_data.append([
                 str(idx),
-                item.get('internal_item_name', ''),
+                item.get('vendor_description', '') or item.get('internal_item_name', ''), # Use vendor desc, fallback to internal
                 item.get('part_number', ''),
-                '',  # Customer Item - BLANK for manual entry
-                item.get('priority', ''),  # Priority
-                '',  # Stock - BLANK for manual entry
+                customer_item,  # Print current name
+                item.get('priority', '') or '',  # Print P0/P1 etc.
+                '',  # Actual Stock - BLANK for manual entry
                 ''   # Reorder - BLANK for manual entry
             ])
 
         # Create table with optimized column widths for PORTRAIT orientation
         # Total width: ~7.5" (letter width 8.5" - 1" margins)
-        # Widths: # (0.3"), Vendor Desc (2.5"), Part# (1.0") [reduced 20%], Customer (2.2"), Priority (0.6"), Stock (0.6"), Reorder (0.6")
+        # Widths: # (0.4"), Vendor Desc (2.2"), Part# (1.0"), Customer (2.0"), Priority (0.6"), Stock (0.8"), Reorder (0.5")
         from reportlab.platypus import Paragraph as PDFParagraph
         from reportlab.lib.styles import getSampleStyleSheet as getStyles
         
-        # Wrap long vendor descriptions
+        # Wrap long descriptions
         cell_style = getStyles()['Normal']
-        cell_style.fontSize = 9
-        cell_style.leading = 10
+        cell_style.fontSize = 8
+        cell_style.leading = 9
         
         wrapped_data = [table_data[0]]  # Header row
         for row in table_data[1:]:
             wrapped_row = [
-                row[0],  # # - plain text
+                row[0],  # #
                 PDFParagraph(row[1], cell_style),  # Vendor Description - wrapped
-                row[2],  # Part Number - plain text
-                row[3],  # Customer Item - blank
+                row[2],  # Part Number
+                PDFParagraph(row[3], cell_style), # Customer Item - wrapped
                 row[4],  # Priority
-                row[5],  # Stock - blank
+                row[5],  # Actual Stock - blank
                 row[6]   # Reorder - blank
             ]
             wrapped_data.append(wrapped_row)
         
-        # Adjusted widths as requested: Part Number reduced, Priority added (similar width to Stock)
-        table = Table(wrapped_data, colWidths=[0.3*inch, 2.5*inch, 1.05*inch, 2.2*inch, 0.6*inch, 0.6*inch, 0.6*inch])
+        table = Table(wrapped_data, colWidths=[0.4*inch, 2.2*inch, 1.0*inch, 2.0*inch, 0.6*inch, 0.8*inch, 0.5*inch])
         table.setStyle(TableStyle([
             # Header styling
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
@@ -1472,7 +1471,8 @@ async def export_unmapped_stock_pdf(
             ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
             ('ALIGN', (0, 1), (0, -1), 'CENTER'),  # # column centered
             ('ALIGN', (1, 1), (1, -1), 'LEFT'),    # Vendor Desc left-aligned
-            ('ALIGN', (2, 1), (-1, -1), 'LEFT'),    # Other columns left-aligned
+            ('ALIGN', (2, 1), (-1, -1), 'LEFT'),   
+            ('ALIGN', (4, 1), (4, -1), 'CENTER'), # Priority centered
             ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
             ('FONTSIZE', (0, 1), (-1, -1), 8),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),  # Black grid lines
@@ -1491,10 +1491,10 @@ async def export_unmapped_stock_pdf(
             content=buffer.getvalue(),
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f"attachment; filename=unmapped_stock_{datetime.now().strftime('%Y%m%d')}.pdf"
+                "Content-Disposition": f"attachment; filename=inventory_count_sheet_{datetime.now().strftime('%Y%m%d')}.pdf"
             }
         )
 
     except Exception as e:
-        logger.error(f"Error generating unmapped stock PDF: {e}")
+        logger.error(f"Error generating inventory count sheet PDF: {e}")
         raise HTTPException(status_code=500, detail=str(e))

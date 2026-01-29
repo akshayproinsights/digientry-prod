@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { vendorMappingAPI } from '../services/vendorMappingApi';
 import type { VendorMappingExportItem, VendorMappingEntry } from '../services/vendorMappingApi';
@@ -12,9 +12,10 @@ type TabType = 'export' | 'upload' | 'review';
 
 const VendorMappingPage: React.FC = () => {
     const [activeTab, setActiveTab] = useState<TabType>('export');
-    const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-    const [uploadedImageUrl, setUploadedImageUrl] = useState<string | null>(null);
-    const [isExtracting, setIsExtracting] = useState(false);
+    const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
+    const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+    const [processingStatus, setProcessingStatus] = useState<string>('idle');
+    const [progress, setProgress] = useState({ total: 0, processed: 0, failed: 0 });
     const [extractionError, setExtractionError] = useState<string | null>(null);
     const [filterText, setFilterText] = useState('');
     const [queuedItemIds, setQueuedItemIds] = useState<Set<string>>(new Set());
@@ -45,21 +46,55 @@ const VendorMappingPage: React.FC = () => {
         staleTime: 5 * 60 * 1000, // Cache for 5 minutes
     });
 
-    // Upload mutation
-    const uploadMutation = useMutation({
-        mutationFn: (file: File) => vendorMappingAPI.uploadScan(file),
-        onSuccess: (data) => {
-            setUploadedImageUrl(data.url);
-        },
-        onError: (error: any) => {
-            alert(`Upload failed: ${error.message}`);
-        },
-    });
+    // Polling effect
+    useEffect(() => {
+        let intervalId: NodeJS.Timeout;
+        if (activeTaskId && ['queued', 'processing', 'uploading'].includes(processingStatus)) {
+            intervalId = setInterval(async () => {
+                try {
+                    const status = await vendorMappingAPI.getProcessStatus(activeTaskId);
+                    setProcessingStatus(status.status);
+                    if (status.progress) setProgress(status.progress);
+
+                    if (status.status === 'completed' && status.rows) {
+                        clearInterval(intervalId);
+                        // Convert rows
+                        const entries: VendorMappingEntry[] = status.rows.map((row: any) => ({
+                            row_number: row.row_number,
+                            vendor_description: row.vendor_description,
+                            part_number: row.part_number,
+                            customer_item_name: null,
+                            stock: row.stock,
+                            reorder: row.reorder,
+                            notes: row.notes,
+                            status: 'Pending',
+                            system_qty: row.system_qty,
+                            variance: row.variance,
+                        }));
+
+                        setReviewQueue(prev => [...prev, ...entries]);
+                        setUploadedFiles([]);
+                        setActiveTaskId(null);
+                        setProcessingStatus('idle');
+                        setActiveTab('review');
+                        alert(`Successfully processed ${entries.length} items from scan(s)!`);
+                    } else if (status.status === 'failed') {
+                        clearInterval(intervalId);
+                        setExtractionError(status.message);
+                        setProcessingStatus('failed');
+                    }
+                } catch (error) {
+                    console.error("Polling error:", error);
+                }
+            }, 2000);
+        }
+        return () => clearInterval(intervalId);
+    }, [activeTaskId, processingStatus]);
 
     // Bulk save mutation
     const bulkSaveMutation = useMutation({
         mutationFn: async () => {
-            return vendorMappingAPI.bulkSaveEntries(reviewQueue, uploadedImageUrl || undefined);
+            return vendorMappingAPI.bulkSaveEntries(reviewQueue, undefined);
         },
         onSuccess: (data) => {
             alert(`Successfully saved ${data.saved_count} entries!`);
@@ -237,46 +272,40 @@ const VendorMappingPage: React.FC = () => {
     // Handle file drop/select
     const handleFileSelect = (files: FileList | null) => {
         if (files && files.length > 0) {
-            const file = files[0];
-            if (!file.type.startsWith('image/')) {
-                alert('Please upload an image file');
-                return;
+            const newFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+            if (newFiles.length !== files.length) {
+                alert('Some files were ignored because they are not images.');
             }
-            setUploadedFile(file);
-            uploadMutation.mutate(file);
+            setUploadedFiles(prev => [...prev, ...newFiles]);
+            setExtractionError(null);
         }
     };
 
-    // Extract data from uploaded image
-    const handleExtract = async () => {
-        if (!uploadedImageUrl) return;
+    const handleRemoveFile = (index: number) => {
+        setUploadedFiles(prev => prev.filter((_, i) => i !== index));
+    };
 
-        setIsExtracting(true);
-        setExtractionError(null);
+    // Upload & Process Trigger
+    const handleUploadAndProcess = async () => {
+        if (uploadedFiles.length === 0) return;
 
         try {
-            const result = await vendorMappingAPI.extractFromImage(uploadedImageUrl);
-            if (result.success && result.data?.rows) {
-                // Convert extracted rows to review queue entries
-                const entries: VendorMappingEntry[] = result.data.rows.map(row => ({
-                    row_number: row.row_number,
-                    vendor_description: row.vendor_description,
-                    part_number: row.part_number,
-                    customer_item_name: null,
-                    stock: row.stock,
-                    reorder: row.reorder,
-                    notes: row.notes,
-                    status: 'Pending' as const,
-                }));
-                setReviewQueue(entries);
-                setActiveTab('review');
-            } else {
-                setExtractionError('No data extracted from image');
-            }
+            setProcessingStatus('uploading');
+            setExtractionError(null);
+
+            // 1. Upload
+            const uploadRes = await vendorMappingAPI.uploadScans(uploadedFiles);
+            if (!uploadRes.success) throw new Error(uploadRes.message);
+
+            // 2. Start Processing
+            const processRes = await vendorMappingAPI.processScans(uploadRes.uploaded_files);
+
+            setActiveTaskId(processRes.task_id);
+            setProcessingStatus(processRes.status);
+
         } catch (error: any) {
-            setExtractionError(error.message || 'Extraction failed');
-        } finally {
-            setIsExtracting(false);
+            setExtractionError(error.message || "Operation failed");
+            setProcessingStatus('idle');
         }
     };
 
@@ -480,63 +509,77 @@ const VendorMappingPage: React.FC = () => {
                 {activeTab === 'upload' && (
                     <div className="space-y-6">
                         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                            <h3 className="font-semibold text-yellow-900 mb-2">Upload Scanned Sheet</h3>
+                            <h3 className="font-semibold text-yellow-900 mb-2">Upload Scanned Sheets</h3>
                             <p className="text-yellow-700 text-sm">
-                                Print the PDF, fill by hand, scan/photo, and upload here. The handwritten values will be extracted automatically.
+                                Upload one or more scanned images of your mapping sheets.
+                                The AI will extract handwritten values, fetch system stock, and calculate variance automatically.
                             </p>
                         </div>
 
-                        <div
-                            className={`border-2 border-dashed rounded-xl p-12 text-center transition cursor-pointer
-                                ${uploadMutation.isPending ? 'border-blue-300 bg-blue-50' : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50'}`}
-                            onClick={() => document.getElementById('fileInput')?.click()}
-                            onDrop={(e) => { e.preventDefault(); handleFileSelect(e.dataTransfer.files); }}
-                            onDragOver={(e) => e.preventDefault()}
-                        >
-                            <input id="fileInput" type="file" accept="image/*" className="hidden" onChange={(e) => handleFileSelect(e.target.files)} />
-
-                            {uploadMutation.isPending ? (
-                                <div className="flex flex-col items-center gap-3">
-                                    <Loader2 className="animate-spin text-blue-600" size={48} />
-                                    <p className="text-blue-600 font-medium">Uploading...</p>
-                                </div>
-                            ) : uploadedFile ? (
-                                <div className="flex flex-col items-center gap-3">
-                                    <FileImage className="text-green-600" size={48} />
-                                    <p className="font-medium text-gray-900">{uploadedFile.name}</p>
-                                    <p className="text-sm text-gray-500">Click to change file</p>
-                                </div>
-                            ) : (
-                                <div className="flex flex-col items-center gap-3">
-                                    <Upload className="text-gray-400" size={48} />
-                                    <p className="font-medium text-gray-700">Drop your scanned image here</p>
-                                    <p className="text-sm text-gray-500">or click to browse</p>
-                                </div>
-                            )}
-                        </div>
-
-                        {uploadedImageUrl && (
-                            <div className="space-y-4">
-                                <div className="border rounded-lg p-4 bg-gray-50">
-                                    <p className="text-sm font-medium text-gray-700 mb-2">Preview:</p>
-                                    <img src={uploadedImageUrl} alt="Uploaded scan" className="max-h-64 mx-auto rounded shadow" />
-                                </div>
-
-                                <button
-                                    onClick={handleExtract}
-                                    disabled={isExtracting}
-                                    className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 transition disabled:opacity-50"
+                        {processingStatus === 'idle' || processingStatus === 'failed' ? (
+                            <>
+                                <div
+                                    className={`border-2 border-dashed rounded-xl p-12 text-center transition cursor-pointer border-gray-300 hover:border-blue-400 hover:bg-blue-50`}
+                                    onClick={() => document.getElementById('fileInput')?.click()}
+                                    onDrop={(e) => { e.preventDefault(); handleFileSelect(e.dataTransfer.files); }}
+                                    onDragOver={(e) => e.preventDefault()}
                                 >
-                                    {isExtracting ? (
-                                        <><Loader2 className="animate-spin" size={20} /> Extracting with AI...</>
-                                    ) : (
-                                        <><RefreshCw size={20} /> Extract Handwritten Data</>
-                                    )}
-                                </button>
+                                    <input id="fileInput" type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleFileSelect(e.target.files)} />
 
-                                {extractionError && (
-                                    <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">{extractionError}</div>
+                                    <div className="flex flex-col items-center gap-3">
+                                        <Upload className="text-gray-400" size={48} />
+                                        <p className="font-medium text-gray-700">Drop scanned images here</p>
+                                        <p className="text-sm text-gray-500">or click to browse multiple files</p>
+                                    </div>
+                                </div>
+
+                                {uploadedFiles.length > 0 && (
+                                    <div className="space-y-4">
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                            {uploadedFiles.map((file, idx) => (
+                                                <div key={idx} className="relative group border rounded-lg p-2 bg-gray-50">
+                                                    <div className="flex flex-col items-center gap-2">
+                                                        <FileImage size={32} className="text-blue-500" />
+                                                        <span className="text-xs text-gray-600 truncate w-full text-center">{file.name}</span>
+                                                    </div>
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); handleRemoveFile(idx); }}
+                                                        className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow hover:bg-red-600"
+                                                    >
+                                                        <Check size={12} className="rotate-45" /> {/* X icon reuse or css rotate */}
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <button
+                                            onClick={handleUploadAndProcess}
+                                            className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 transition shadow-lg"
+                                        >
+                                            <RefreshCw size={20} /> Upload & Process {uploadedFiles.length} Files
+                                        </button>
+                                    </div>
                                 )}
+                            </>
+                        ) : (
+                            <div className="text-center py-12 space-y-4">
+                                <Loader2 className="animate-spin text-blue-600 mx-auto" size={48} />
+                                <div>
+                                    <h3 className="text-xl font-semibold text-gray-900 capitalize">{processingStatus}...</h3>
+                                    <p className="text-gray-500">Processing {progress.processed} of {progress.total} files</p>
+                                </div>
+                                <div className="w-full max-w-md mx-auto bg-gray-200 rounded-full h-2.5">
+                                    <div
+                                        className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                                        style={{ width: `${(progress.processed / (progress.total || 1)) * 100}%` }}
+                                    ></div>
+                                </div>
+                            </div>
+                        )}
+
+                        {extractionError && (
+                            <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 font-medium">
+                                Error: {extractionError}
                             </div>
                         )}
                     </div>
@@ -575,7 +618,9 @@ const VendorMappingPage: React.FC = () => {
                                             <th className="px-3 py-2 text-left font-medium text-gray-700">Vendor Description</th>
                                             <th className="px-3 py-2 text-left font-medium text-gray-700 w-36">Part Number</th>
                                             <th className="px-3 py-2 text-left font-medium text-gray-700 w-48">Customer Item</th>
-                                            <th className="px-3 py-2 text-left font-medium text-gray-700 w-20">Stock</th>
+                                            <th className="px-3 py-2 text-left font-medium text-gray-700 w-20">System Qty</th>
+                                            <th className="px-3 py-2 text-left font-medium text-gray-700 w-24">Counted Qty</th>
+                                            <th className="px-3 py-2 text-left font-medium text-gray-700 w-24">Variance</th>
                                             <th className="px-3 py-2 text-left font-medium text-gray-700 w-20">Reorder</th>
                                             <th className="px-3 py-2 text-left font-medium text-gray-700 w-20">Action</th>
                                         </tr>
@@ -594,13 +639,41 @@ const VendorMappingPage: React.FC = () => {
                                                         className="w-44 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 text-sm"
                                                     />
                                                 </td>
+                                                <td className="px-3 py-2 text-center text-gray-500 font-mono">
+                                                    {entry.system_qty !== undefined && entry.system_qty !== null ? entry.system_qty : '-'}
+                                                </td>
                                                 <td className="px-3 py-2">
                                                     <input
                                                         type="number"
                                                         value={entry.stock ?? ''}
-                                                        onChange={(e) => editReviewItem(idx, 'stock', e.target.value ? parseFloat(e.target.value) : null)}
-                                                        className="w-16 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 text-sm"
+                                                        onChange={(e) => {
+                                                            const newStock = e.target.value ? parseFloat(e.target.value) : null;
+                                                            // Recalculate Variance on edit
+                                                            const sysQty = entry.system_qty || 0;
+                                                            const newVar = newStock !== null ? newStock - sysQty : null;
+
+                                                            setReviewQueue(prev => {
+                                                                const newQueue = [...prev];
+                                                                newQueue[idx] = {
+                                                                    ...newQueue[idx],
+                                                                    stock: newStock,
+                                                                    variance: newVar
+                                                                };
+                                                                return newQueue;
+                                                            });
+                                                        }}
+                                                        className="w-20 px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500 text-sm font-bold text-blue-700"
                                                     />
+                                                </td>
+                                                <td className="px-3 py-2">
+                                                    {entry.variance !== undefined && entry.variance !== null ? (
+                                                        <span className={`px-2 py-1 rounded text-xs font-bold ${entry.variance > 0 ? 'bg-green-100 text-green-700' :
+                                                            entry.variance < 0 ? 'bg-red-100 text-red-700' :
+                                                                'bg-gray-100 text-gray-500'
+                                                            }`}>
+                                                            {entry.variance > 0 ? `+${entry.variance}` : entry.variance}
+                                                        </span>
+                                                    ) : '-'}
                                                 </td>
                                                 <td className="px-3 py-2">
                                                     <input

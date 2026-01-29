@@ -234,8 +234,10 @@ const DashboardPage: React.FC = () => {
                         </span>
                     )}
                 </button>
-            </div>
+            </div >
         );
+
+        return () => setHeaderActions(null);
     }, [selectedPreset, showAdvancedFilters, hasActiveFilters, customerFilter, vehicleFilter, partNumberFilter, setHeaderActions]);
 
     // Draft PO handlers
