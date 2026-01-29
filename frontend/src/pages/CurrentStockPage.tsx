@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
-import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2, CheckSquare, Square, Plus, ShoppingCart, Loader2, Printer } from 'lucide-react';
+import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2, CheckSquare, Square, XCircle } from 'lucide-react';
 import { purchaseOrderAPI } from '../services/purchaseOrderAPI';
 import DeleteConfirmModal from '../components/DeleteConfirmModal';
 import {
@@ -39,9 +39,8 @@ interface SmartEditableCellProps {
     itemId: number;
     field: 'old_stock' | 'reorder_point' | 'physical_count';
     onSave: (id: number, field: string, value: number) => Promise<void>;
-    isEditing: boolean;
-    onEditStart: () => void;
-    onEditEnd: () => void;
+    onEditStart?: () => void;
+    onEditEnd?: () => void;
     min?: number;
     step?: number;
 }
@@ -52,9 +51,8 @@ const SmartEditableCell: React.FC<SmartEditableCellProps> = ({
     itemId,
     field,
     onSave,
-    isEditing,
-    onEditStart,
-    onEditEnd,
+    onEditStart = () => { },
+    onEditEnd = () => { },
     min = 0,
     step = 1
 }) => {
@@ -219,13 +217,12 @@ const CurrentStockPage: React.FC = () => {
     const [isCalculating, setIsCalculating] = useState(false);
 
     // Edit mode state
-    const [editingStockId, setEditingStockId] = useState<number | null>(null);
-    const [activeEditCells, setActiveEditCells] = useState<Set<string>>(new Set());
     const [pendingSetupCount, setPendingSetupCount] = useState(0);
 
     // Mapping sheet upload state
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
     // Mapping-related state
     const [openDropdowns, setOpenDropdowns] = useState<{ [key: number]: boolean }>({});
@@ -307,7 +304,7 @@ const CurrentStockPage: React.FC = () => {
                     className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
                 >
                     <FileDown size={16} />
-                    Export Unmapped PDF
+                    Download Mapping Sheet
                 </button>
             </div>
         );
@@ -456,11 +453,6 @@ const CurrentStockPage: React.FC = () => {
 
     // Smart Cell Save Handler
     const handleSmartCellSave = async (id: number, field: string, value: number) => {
-        const fieldKey = `${id}-${field}`;
-
-        // Mark cell as active
-        setActiveEditCells(prev => new Set(prev).add(fieldKey));
-
         // Update local state immediately
         setStockItems(prev => prev.map(item =>
             item.id === id ? { ...item, [field]: value } : item
@@ -473,27 +465,14 @@ const CurrentStockPage: React.FC = () => {
         } catch (error) {
             console.error('Error updating stock level:', error);
             throw error; // Let SmartEditableCell handle error state
-        } finally {
-            // Remove cell from active edits
-            setActiveEditCells(prev => {
-                const newSet = new Set(prev);
-                newSet.delete(fieldKey);
-                return newSet;
-            });
         }
     };
 
     // Update Physical Stock Handler (for SmartEditableCell)
-    const handleUpdatePhysicalStock = async (id: number, field: string, value: number) => {
+    const handleUpdatePhysicalStock = async (id: number, _field: string, value: number) => {
         const item = stockItems.find(i => i.id === id);
         if (!item) return;
 
-        const fieldKey = `${id}-physical_stock`;
-
-        // Mark cell as active
-        setActiveEditCells(prev => new Set(prev).add(fieldKey));
-
-        // Calculate expected adjustment relative to system stock (excluding manual adjustment)
         // Calculate expected adjustment relative to system stock (excluding manual adjustment)
         // Current Formula: On Hand = current_stock + manual_adjustment
         // New Manual Adjustment = UserPhysicalCount - current_stock
@@ -513,13 +492,6 @@ const CurrentStockPage: React.FC = () => {
             // But we should probably revert the state?
             // SmartEditableCell expects us to throw if failed.
             throw error;
-        } finally {
-            // Remove cell from active edits
-            setActiveEditCells(prev => {
-                const newSet = new Set(prev);
-                newSet.delete(fieldKey);
-                return newSet;
-            });
         }
     };
 
@@ -750,6 +722,7 @@ const CurrentStockPage: React.FC = () => {
 
         setIsUploading(true);
         setUploadProgress(0);
+        setErrorMessage(null); // Clear previous errors
 
         try {
             // Simulate progress
@@ -783,9 +756,8 @@ const CurrentStockPage: React.FC = () => {
 
         } catch (error: any) {
             console.error('Upload error:', error);
-            alert(
-                `Failed to upload mapping sheet:\n${error.response?.data?.detail || error.message}`
-            );
+            const msg = `Failed to upload mapping sheet: ${error.response?.data?.detail || error.message}`;
+            setErrorMessage(msg);
         } finally {
             setIsUploading(false);
             setUploadProgress(0);
@@ -952,6 +924,27 @@ const CurrentStockPage: React.FC = () => {
 
     return (
         <div className="space-y-6">
+            {/* Error Message Banner */}
+            {errorMessage && (
+                <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-md shadow-sm">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center">
+                            <XCircle className="text-red-500 mr-3" size={20} />
+                            <div>
+                                <p className="text-red-700 font-medium">Upload Failed</p>
+                                <p className="text-red-600 text-sm">{errorMessage}</p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => setErrorMessage(null)}
+                            className="text-red-400 hover:text-red-600 transition"
+                        >
+                            <X size={18} />
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* Summary Cards */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
@@ -1111,35 +1104,7 @@ const CurrentStockPage: React.FC = () => {
                         <option value="out_of_stock">Out of Stock</option>
                     </select>
 
-                    {/* Action Buttons - Upload/Download */}
-                    <div className="flex gap-2 ml-auto">
-                        <div className="relative">
-                            <input
-                                type="file"
-                                id="mapping-sheet-upload"
-                                className="hidden"
-                                onChange={handleUploadMappingSheet}
-                                accept=".pdf,.png,.jpg,.jpeg"
-                                disabled={isUploading}
-                            />
-                            <label
-                                htmlFor="mapping-sheet-upload"
-                                className={`flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 cursor-pointer transition-colors ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                            >
-                                {isUploading ? <Loader2 className="animate-spin" size={18} /> : <Upload className="text-gray-500" size={18} />}
-                                <span className="text-sm font-medium">Upload Mapping</span>
-                            </label>
-                        </div>
 
-                        <button
-                            onClick={handleExportPDF}
-                            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
-                            title="Download Inventory Count Sheet"
-                        >
-                            <Printer className="text-gray-500" size={18} />
-                            <span className="text-sm font-medium">Download Inventory Mapping</span>
-                        </button>
-                    </div>
 
                 </div>
             </div>
@@ -1286,9 +1251,11 @@ const CurrentStockPage: React.FC = () => {
                                                                 }}
                                                                 onBlur={() => handleCustomerItemBlur(item)}
                                                                 placeholder={hasCustomerItem ? "" : "Select..."}
-                                                                className={`w-full px-2 py-1.5 border rounded text-sm font-medium transition-colors truncate block ${hasCustomerItem
-                                                                    ? 'border-green-500 bg-green-50 text-green-700 pr-5'
-                                                                    : 'border-amber-400 border-dashed bg-white text-gray-600 pr-2'
+                                                                className={`w-full px-2 py-1.5 border rounded text-sm font-medium transition-colors truncate block ${isFlashing
+                                                                    ? 'bg-green-200 ring-2 ring-green-400 border-green-500'
+                                                                    : hasCustomerItem
+                                                                        ? 'border-green-500 bg-green-50 text-green-700 pr-5'
+                                                                        : 'border-amber-400 border-dashed bg-white text-gray-600 pr-2'
                                                                     }`}
                                                             />
 
@@ -1376,9 +1343,6 @@ const CurrentStockPage: React.FC = () => {
                                                             itemId={item.id}
                                                             field="reorder_point"
                                                             onSave={handleSmartCellSave}
-                                                            isEditing={editingStockId === item.id}
-                                                            onEditStart={() => setEditingStockId(item.id)}
-                                                            onEditEnd={() => setEditingStockId(null)}
                                                             min={0}
                                                             step={1}
                                                         />
@@ -1428,9 +1392,6 @@ const CurrentStockPage: React.FC = () => {
                                                             itemId={item.id}
                                                             field="physical_count"
                                                             onSave={handleUpdatePhysicalStock}
-                                                            isEditing={editingStockId === item.id}
-                                                            onEditStart={() => setEditingStockId(item.id)}
-                                                            onEditEnd={() => setEditingStockId(null)}
                                                             min={0}
                                                             step={1}
                                                         />
@@ -1558,7 +1519,6 @@ const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = ({ partN
     const [transactions, setTransactions] = useState<StockTransaction[]>([]);
     const [summary, setSummary] = useState({ total_in: 0, total_out: 0, transaction_count: 0, old_stock: null as number | null });
     const [loading, setLoading] = useState(true);
-    const [editingCells, setEditingCells] = useState<Set<string>>(new Set());
     const [savingCells, setSavingCells] = useState<Set<string>>(new Set());
     const [deletingId, setDeletingId] = useState<string | null>(null);
 

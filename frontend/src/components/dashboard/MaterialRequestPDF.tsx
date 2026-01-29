@@ -172,8 +172,8 @@ const MaterialRequestPDF: React.FC<MaterialRequestPDFProps> = ({
                                         className="h-14 object-contain mb-1" /* Increased size */
                                     />
                                     {/* Text labels removed for Top 1% cleaner look */}
-                                    <a href="https://www.digientry.com" className="text-[10px] text-blue-600 hover:text-blue-800 font-medium mt-1">
-                                        www.digientry.com
+                                    <a href="https://www.mydigientry.com" className="text-[10px] text-blue-600 hover:text-blue-800 font-medium mt-1">
+                                        www.mydigientry.com
                                     </a>
                                 </div>
                             </div>

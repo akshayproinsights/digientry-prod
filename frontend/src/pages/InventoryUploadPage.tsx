@@ -15,6 +15,7 @@ const InventoryUploadPage: React.FC = () => {
     const [uploadProgress, setUploadProgress] = useState(0);
     const [isProcessing, setIsProcessing] = useState(false);
     const [processingStatus, setProcessingStatus] = useState<any>(null);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [pollingInterval, setPollingInterval] = useState<number | null>(null);
 
     // Upload tracking for bulk uploads
@@ -326,6 +327,7 @@ const InventoryUploadPage: React.FC = () => {
         if (files.length === 0) return;
 
         try {
+            setErrorMessage(null); // Clear previous errors
             setIsUploading(true);
             // UPDATE GLOBAL STATUS: Uploading
             setInventoryStatus({
@@ -454,14 +456,28 @@ const InventoryUploadPage: React.FC = () => {
                         setIsProcessing(false);
                         // Failed
                         setInventoryStatus({ processingCount: 0 });
+                        setErrorMessage(status.message || 'Processing failed');
                     }
                 }
             }, 1000);
-        } catch (error) {
+        } catch (error: any) {
             console.error('Error:', error);
             setIsUploading(false);
             setIsProcessing(false);
             setInventoryStatus({ isUploading: false, processingCount: 0 });
+
+            // Set friendly error message
+            let msg = "An unexpected error occurred during upload.";
+            if (error.response) {
+                if (error.response.status === 503 || error.response.status === 500) {
+                    msg = "Server error (503). The server might be overloaded or restarting. Please try again in a moment.";
+                } else if (error.response.data?.detail) {
+                    msg = `Upload failed: ${error.response.data.detail}`;
+                }
+            } else if (error.message) {
+                msg = error.message;
+            }
+            setErrorMessage(msg);
         }
     };
 
@@ -670,6 +686,27 @@ const InventoryUploadPage: React.FC = () => {
                                 style={{ width: `${uploadProgress}%` }}
                             />
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Error Message Banner */}
+            {errorMessage && (
+                <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-md shadow-sm mb-4">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center">
+                            <XCircle className="text-red-500 mr-3" size={20} />
+                            <div>
+                                <p className="text-red-700 font-medium">Upload Failed</p>
+                                <p className="text-red-600 text-sm">{errorMessage}</p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => setErrorMessage(null)}
+                            className="text-red-400 hover:text-red-600 transition"
+                        >
+                            <X size={18} />
+                        </button>
                     </div>
                 </div>
             )}

@@ -15,6 +15,7 @@ const UploadPage: React.FC = () => {
     const [uploadProgress, setUploadProgress] = useState(0);
     const [isProcessing, setIsProcessing] = useState(false);
     const [processingStatus, setProcessingStatus] = useState<any>(null);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [, setPollingInterval] = useState<number | null>(null);
     const intervalRef = React.useRef<number | null>(null); // Ref to track interval for cleanup
     const duplicateStatsRef = React.useRef<{ totalUploaded: number; replaced: number; skipped: number; newFiles: number } | null>(null);
@@ -360,6 +361,7 @@ const UploadPage: React.FC = () => {
             // CRITICAL: Clear any old completion status from previous uploads
             localStorage.removeItem('salesCompletionStatus');
             setProcessingStatus(null);
+            setErrorMessage(null); // Clear previous errors
 
             setIsUploading(true);
             setSalesStatus({
@@ -518,13 +520,14 @@ const UploadPage: React.FC = () => {
                     } else {
                         setIsProcessing(false);
                         setSalesStatus({ processingCount: 0, reviewCount: 0, syncCount: 0 });
+                        setErrorMessage(status.message || 'Processing failed');
                     }
                 }
             }, 1000); // Poll every 1 second for responsive updates
 
             intervalRef.current = pollInterval;
             setPollingInterval(pollInterval);
-        } catch (error) {
+        } catch (error: any) {
             console.error('❌ [DEBUG] Upload/Process ERROR:', error);
             console.error('❌ [DEBUG] Error details:', {
                 message: error instanceof Error ? error.message : String(error),
@@ -534,6 +537,19 @@ const UploadPage: React.FC = () => {
             setIsUploading(false);
             setIsProcessing(false);
             setSalesStatus({ isUploading: false, processingCount: 0, reviewCount: 0, syncCount: 0 });
+
+            // Set friendly error message
+            let msg = "An unexpected error occurred during upload.";
+            if (error.response) {
+                if (error.response.status === 503 || error.response.status === 500) {
+                    msg = "Server error (503). The server might be overloaded or restarting. Please try again in a moment.";
+                } else if (error.response.data?.detail) {
+                    msg = `Upload failed: ${error.response.data.detail}`;
+                }
+            } else if (error.message) {
+                msg = error.message;
+            }
+            setErrorMessage(msg);
         }
     };
 
@@ -789,6 +805,27 @@ const UploadPage: React.FC = () => {
                                 style={{ width: `${uploadProgress}%` }}
                             />
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Error Message Banner */}
+            {errorMessage && (
+                <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-md shadow-sm mb-4">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center">
+                            <XCircle className="text-red-500 mr-3" size={20} />
+                            <div>
+                                <p className="text-red-700 font-medium">Upload Failed</p>
+                                <p className="text-red-600 text-sm">{errorMessage}</p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => setErrorMessage(null)}
+                            className="text-red-400 hover:text-red-600 transition"
+                        >
+                            <X size={18} />
+                        </button>
                     </div>
                 </div>
             )}
