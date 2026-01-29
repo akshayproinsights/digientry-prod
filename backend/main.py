@@ -2,7 +2,7 @@
 Main FastAPI application.
 Handles routing, middleware, and application lifecycle.
 """
-print("DigiEntry Backend is starting......")
+print("DigiEntry Backend is starting........")
 # Final check done yep done yes git yep done api done
 # Initial deployment trigger done yeah d addddd
 from fastapi import FastAPI
@@ -21,7 +21,7 @@ console_handler.setLevel(logging.INFO)
 # Set format
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 console_handler.setFormatter(formatter)
-
+# nothing
 # Configure root logger
 logging.basicConfig(
     level=logging.INFO,

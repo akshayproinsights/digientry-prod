@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
-import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2, CheckSquare, Square, Plus, ShoppingCart, Loader2 } from 'lucide-react';
+import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2, CheckSquare, Square, Plus, ShoppingCart, Loader2, Printer } from 'lucide-react';
 import { purchaseOrderAPI } from '../services/purchaseOrderAPI';
 import DeleteConfirmModal from '../components/DeleteConfirmModal';
 import {
     getStockLevels,
     getStockSummary,
     updateStockLevel,
-    adjustStock,
     updateStockAdjustment,
     calculateStockLevels,
     getStockHistory,
@@ -38,7 +37,7 @@ type CellState = 'default' | 'editing' | 'success' | 'error';
 interface SmartEditableCellProps {
     value: number;
     itemId: number;
-    field: 'old_stock' | 'reorder_point';
+    field: 'old_stock' | 'reorder_point' | 'physical_count';
     onSave: (id: number, field: string, value: number) => Promise<void>;
     isEditing: boolean;
     onEditStart: () => void;

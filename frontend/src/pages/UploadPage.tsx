@@ -236,8 +236,8 @@ const UploadPage: React.FC = () => {
         const handleBeforeUnload = (e: BeforeUnloadEvent) => {
             if (isUploading) {
                 e.preventDefault();
-                e.returnValue = 'Files are uploading to server. Please wait a few seconds.';
-                return 'Files are uploading to server. Please wait a few seconds.';
+                e.returnValue = 'Files are uploading. navigating away will cancel the upload.';
+                return 'Files are uploading. navigating away will cancel the upload.';
             }
         };
 
@@ -772,6 +772,27 @@ const UploadPage: React.FC = () => {
 
     return (
         <div className="max-w-4xl mx-auto space-y-4">
+            {/* Warning Banner During Upload */}
+            {isUploading && (
+                <div className="fixed top-0 left-0 right-0 bg-yellow-500 text-white px-6 py-4 shadow-lg z-50">
+                    <div className="max-w-7xl mx-auto flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                            <Loader2 className="animate-spin" size={24} />
+                            <div>
+                                <p className="font-bold">Files Uploading - Do Not Close or Navigate Away</p>
+                                <p className="text-sm">Leaving this page will cancel the upload! ({uploadProgress}% done)</p>
+                            </div>
+                        </div>
+                        <div className="w-32 bg-yellow-600 rounded-full h-2">
+                            <div
+                                className="bg-white h-2 rounded-full transition-all"
+                                style={{ width: `${uploadProgress}%` }}
+                            />
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Upload Area */}
             <div
                 onDragOver={handleDragOver}

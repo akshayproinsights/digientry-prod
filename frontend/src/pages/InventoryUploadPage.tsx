@@ -208,8 +208,8 @@ const InventoryUploadPage: React.FC = () => {
         const handleBeforeUnload = (e: BeforeUnloadEvent) => {
             if (isUploading) {
                 e.preventDefault();
-                e.returnValue = 'Files are uploading to server. Please wait a few seconds.';
-                return 'Files are uploading to server. Please wait a few seconds.';
+                e.returnValue = 'Files are uploading. navigating away will cancel the upload.';
+                return 'Files are uploading. navigating away will cancel the upload.';
             }
         };
 
@@ -660,8 +660,8 @@ const InventoryUploadPage: React.FC = () => {
                         <div className="flex items-center space-x-3">
                             <Loader2 className="animate-spin" size={24} />
                             <div>
-                                <p className="font-bold">कृपया प्रतीक्षा करें - Please Wait!</p>
-                                <p className="text-sm">Files uploading to server... Don't close this page ({uploadProgress}% done)</p>
+                                <p className="font-bold">Files Uploading - Do Not Close or Navigate Away</p>
+                                <p className="text-sm">Leaving this page will cancel the upload! ({uploadProgress}% done)</p>
                             </div>
                         </div>
                         <div className="w-32 bg-yellow-600 rounded-full h-2">
