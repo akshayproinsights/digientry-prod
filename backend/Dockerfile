@@ -23,4 +23,5 @@ COPY . .
 EXPOSE 8080
 
 # Run uvicorn when the container launches
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Run uvicorn when the container launches, respecting the PORT environment variable
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}
