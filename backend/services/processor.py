@@ -31,7 +31,7 @@ from utils.hash_utils import calculate_image_hash
 logger = logging.getLogger(__name__)
 
 # Configuration for parallel processing
-MAX_WORKERS = 10  # Process up to 10 invoices concurrently
+MAX_WORKERS = 20  # Process up to 20 invoices concurrently
 
 # Gemini System Instruction - NOW LOADED DYNAMICALLY per user
 # See config_loader.get_gemini_prompt(username) for user-specific prompts

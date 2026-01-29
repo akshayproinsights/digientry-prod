@@ -18,7 +18,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Thread pool for blocking operations (increased for bulk uploads)
-executor = ThreadPoolExecutor(max_workers=15)
+executor = ThreadPoolExecutor(max_workers=25)
 
 # In-memory storage REMOVED - using database table 'upload_tasks'
 # processing_status: Dict[str, Dict[str, Any]] = {}

@@ -1,18 +1,15 @@
-# backend/Dockerfile
-FROM python:3.11-slim
-
-# Set working directory
+# Stage 1: Build
+FROM node:18-alpine as builder
 WORKDIR /app
-
-# Copy requirements and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the application code
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY . .
+RUN npm run build
 
-# CRITICAL: Cloud Run needs this variable to know which port to check
-ENV PORT=8080
-
-# Run the app binding to 0.0.0.0 (External access) on Port 8080
-CMD exec uvicorn main:app --host 0.0.0.0 --port $PORT
+# Stage 2: Serve
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Cloud Run requires listening on port 8080
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]
