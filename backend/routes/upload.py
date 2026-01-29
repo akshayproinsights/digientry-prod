@@ -18,7 +18,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Thread pool for blocking operations (increased for bulk uploads)
-executor = ThreadPoolExecutor(max_workers=2)
+executor = ThreadPoolExecutor(max_workers=15)
 
 # In-memory storage REMOVED - using database table 'upload_tasks'
 # processing_status: Dict[str, Dict[str, Any]] = {}
@@ -454,9 +454,10 @@ def process_invoices_sync(
         })
         
         # Define progress callback
-        def update_progress(current_index: int, total: int, current_file: str):
+        def update_progress(current_index: int, failed_count: int, total: int, current_file: str):
             """Callback to update processing status in real-time"""
             current_status["progress"]["processed"] = current_index
+            current_status["progress"]["failed"] = failed_count
             
             update_db_status({
                 "progress": current_status["progress"],
@@ -464,7 +465,7 @@ def process_invoices_sync(
                 "current_index": current_index,
                 "message": f"Processing: {current_file}"
             })
-            logger.info(f"Progress: {current_index}/{total} - {current_file}")
+            logger.info(f"Progress: {current_index}/{total} (Failed: {failed_count}) - {current_file}")
         
         # Import the processor
         from services.processor import process_invoices_batch

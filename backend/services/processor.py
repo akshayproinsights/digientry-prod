@@ -31,7 +31,7 @@ from utils.hash_utils import calculate_image_hash
 logger = logging.getLogger(__name__)
 
 # Configuration for parallel processing
-MAX_WORKERS = 25  # Process up to 25 invoices concurrently (increased for bulk uploads)
+MAX_WORKERS = 10  # Process up to 10 invoices concurrently
 
 # Gemini System Instruction - NOW LOADED DYNAMICALLY per user
 # See config_loader.get_gemini_prompt(username) for user-specific prompts
@@ -66,13 +66,18 @@ class RateLimiter:
         self._lock = threading.Lock()
 
     def wait(self):
+        wait_time = 0
         with self._lock:
             now = time.time()
             elapsed = now - self._last_call
-            wait_time = self.interval - elapsed
-            if wait_time > 0:
-                time.sleep(wait_time)
-            self._last_call = time.time()
+            if elapsed < self.interval:
+                wait_time = self.interval - elapsed
+            # Optimistically update last_call assuming we'll sleep
+            # This reserves the slot for this thread
+            self._last_call = time.time() + wait_time
+        
+        if wait_time > 0:
+            time.sleep(wait_time)
 
 
 limiter = RateLimiter(rpm=30)
@@ -821,7 +826,7 @@ def process_invoices_batch(
     r2_bucket: str,
     sheet_id: str,
     username: str,
-    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    progress_callback: Optional[Callable[[int, int, int, str], None]] = None,
     force_upload: bool = False
 ) -> Dict[str, Any]:
     """
@@ -832,7 +837,7 @@ def process_invoices_batch(
         r2_bucket: R2 bucket name
         sheet_id: Google Sheet ID
         username: Username for logging
-        progress_callback: Optional callback function(processed, total, current_file)
+        progress_callback: Optional callback function(processed, failed, total, current_file)
         force_upload: If True, bypass duplicate checking and delete old duplicates
     
     Returns:
@@ -864,7 +869,8 @@ def process_invoices_batch(
         try:
             # Update progress - downloading
             if progress_callback:
-                progress_callback(file_index, len(file_keys), f"Downloading {file_key}")
+                with results_lock:
+                    progress_callback(results["processed"], results["failed"], len(file_keys), f"Downloading {file_key}")
             
             # Download from R2
             print(f"\n[{file_index + 1}/{len(file_keys)}] Downloading: {file_key}", flush=True)
@@ -875,6 +881,8 @@ def process_invoices_batch(
                 with results_lock:
                     results["failed"] += 1
                     results["errors"].append(f"Failed to download: {file_key}")
+                    if progress_callback:
+                         progress_callback(results["processed"], results["failed"], len(file_keys), f"Failed download: {file_key}")
                 return None
             
             # Calculate image hash (needed for database storage)
@@ -903,7 +911,8 @@ def process_invoices_batch(
             
             # Update progress - automated processing
             if progress_callback:
-                progress_callback(file_index, len(file_keys), f"Automated processing: {file_key}")
+                with results_lock:
+                    progress_callback(results["processed"], results["failed"], len(file_keys), f"Automated processing: {file_key}")
             
             # Process with automated system (with user-specific prompt)
             print(f"[AI PROCESSING] {file_key}", flush=True)
@@ -920,13 +929,15 @@ def process_invoices_batch(
                 
                 # Update progress - completed
                 if progress_callback:
-                    progress_callback(results["processed"], len(file_keys), f"Completed: {file_key}")
+                    progress_callback(results["processed"], results["failed"], len(file_keys), f"Completed: {file_key}")
                 
                 return rows
             else:
                 with results_lock:
                     results["failed"] += 1
                     results["errors"].append(f"AI processing failed: {file_key}")
+                    if progress_callback:
+                        progress_callback(results["processed"], results["failed"], len(file_keys), f"Failed processing: {file_key}")
                 return None
         
         except Exception as e:
@@ -934,6 +945,8 @@ def process_invoices_batch(
             with results_lock:
                 results["failed"] += 1
                 results["errors"].append(f"Error: {file_key} - {str(e)}")
+                if progress_callback:
+                    progress_callback(results["processed"], results["failed"], len(file_keys), f"Error processing: {file_key}")
             return None
     
     # ===== PHASE 1: PRE-PROCESSING DUPLICATE CHECK =====
@@ -947,7 +960,8 @@ def process_invoices_batch(
             try:
                 # Download and hash file
                 if progress_callback:
-                    progress_callback(idx, len(file_keys), f"Checking for duplicates: {file_key}")
+                    # Just use 0 for processed/failed during pre-check
+                    progress_callback(0, 0, len(file_keys), f"Checking for duplicates: {file_key}")
                 
                 logger.info(f"[{idx + 1}/{len(file_keys)}] Checking: {file_key}")
                 image_bytes = storage.download_file(r2_bucket, file_key)
@@ -1019,7 +1033,7 @@ def process_invoices_batch(
     if all_rows:
         try:
             if progress_callback:
-                progress_callback(results["processed"], len(file_keys), "Saving to Supabase database...")
+                progress_callback(results["processed"], results["failed"], len(file_keys), "Saving to Supabase database...")
             
             logger.info(f"Saving {len(all_rows)} new rows to Supabase invoices table")
             
@@ -1087,13 +1101,13 @@ def process_invoices_batch(
             logger.info(f"✅ SUCCESS: Saved {saved_count} rows to Supabase (failed: {failed_inserts})")
             
             if progress_callback:
-                progress_callback(results["processed"], len(file_keys), "Creating verification records...")
+                progress_callback(results["processed"], results["failed"], len(file_keys), "Creating verification records...")
             
             # Create verification records in Supabase
             create_verification_records_supabase(all_rows, username)
             
             if progress_callback:
-                progress_callback(results["processed"], len(file_keys), "Complete!")
+                progress_callback(results["processed"], results["failed"], len(file_keys), "Complete!")
             
         except Exception as e:
             logger.error(f"Error saving to Supabase: {e}")

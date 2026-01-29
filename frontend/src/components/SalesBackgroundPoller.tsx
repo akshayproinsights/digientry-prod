@@ -109,7 +109,8 @@ const SalesBackgroundPoller: React.FC = () => {
                 // Update global status
                 const total = statusData.progress?.total || 0;
                 const processed = statusData.progress?.processed || 0;
-                const remaining = Math.max(0, total - processed);
+                const failed = statusData.progress?.failed || 0;
+                const remaining = Math.max(0, total - processed - failed);
 
                 // Check for completion
                 if (statusData.status === 'completed') {

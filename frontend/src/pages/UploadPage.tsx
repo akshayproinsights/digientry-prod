@@ -120,7 +120,8 @@ const UploadPage: React.FC = () => {
                     // UPDATE GLOBAL STATUS
                     const total = statusData.progress?.total || 0;
                     const processed = statusData.progress?.processed || 0;
-                    const remaining = Math.max(0, total - processed);
+                    const failed = statusData.progress?.failed || 0;
+                    const remaining = Math.max(0, total - processed - failed);
 
                     setSalesStatus({
                         isUploading: false,
@@ -451,7 +452,8 @@ const UploadPage: React.FC = () => {
 
                 const processed = status.progress?.processed || 0;
                 const total = status.progress?.total || 0;
-                const remaining = Math.max(0, total - processed);
+                const failed = status.progress?.failed || 0;
+                const remaining = Math.max(0, total - processed - failed);
                 setSalesStatus({ processingCount: remaining, totalProcessing: total, reviewCount: 0, syncCount: 0 });
 
 
@@ -670,7 +672,8 @@ const UploadPage: React.FC = () => {
                     // UPDATE GLOBAL STATUS to keep sidebar in sync
                     const total = status.progress?.total || 0;
                     const processed = status.progress?.processed || 0;
-                    const remaining = Math.max(0, total - processed);
+                    const failed = status.progress?.failed || 0;
+                    const remaining = Math.max(0, total - processed - failed);
 
                     setSalesStatus({
                         processingCount: remaining,

@@ -277,12 +277,13 @@ def process_inventory_sync(
         inventory_processing_status[task_id]["progress"]["processed"] = 0
         inventory_processing_status[task_id]["start_time"] = datetime.now().isoformat()
         
-        def update_progress(current_index: int, total: int, current_file: str):
+        def update_progress(current_index: int, failed_count: int, total: int, current_file: str):
             inventory_processing_status[task_id]["progress"]["processed"] = current_index
+            inventory_processing_status[task_id]["progress"]["failed"] = failed_count
             inventory_processing_status[task_id]["current_file"] = current_file
             inventory_processing_status[task_id]["current_index"] = current_index
             inventory_processing_status[task_id]["message"] = f"Processing: {current_file}"
-            logger.info(f"Progress: {current_index}/{total} - {current_file}")
+            logger.info(f"Progress: {current_index}/{total} (Failed: {failed_count}) - {current_file}")
         
         from services.inventory_processor import process_inventory_batch
         

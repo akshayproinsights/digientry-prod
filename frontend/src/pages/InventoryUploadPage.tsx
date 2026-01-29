@@ -105,7 +105,8 @@ const InventoryUploadPage: React.FC = () => {
                     // UPDATE GLOBAL STATUS
                     const total = statusData.progress?.total || 0;
                     const processed = statusData.progress?.processed || 0;
-                    const remaining = Math.max(0, total - processed);
+                    const failed = statusData.progress?.failed || 0;
+                    const remaining = Math.max(0, total - processed - failed);
 
                     setInventoryStatus({
                         isUploading: false,
@@ -406,7 +407,8 @@ const InventoryUploadPage: React.FC = () => {
                 // UPDATE GLOBAL STATUS: Processing Progress
                 const processed = status.progress?.processed || 0;
                 const total = status.progress?.total || 0;
-                const remaining = Math.max(0, total - processed);
+                const failed = status.progress?.failed || 0;
+                const remaining = Math.max(0, total - processed - failed);
                 setInventoryStatus({ processingCount: remaining });
 
                 // Handle duplicate detection - START SEQUENTIAL WORKFLOW
@@ -580,7 +582,8 @@ const InventoryUploadPage: React.FC = () => {
                     // UPDATE GLOBAL STATUS: Progress
                     const processed = status.progress?.processed || 0;
                     const total = status.progress?.total || 0;
-                    const remaining = Math.max(0, total - processed);
+                    const failed = status.progress?.failed || 0;
+                    const remaining = Math.max(0, total - processed - failed);
                     setInventoryStatus({ processingCount: remaining });
 
 
