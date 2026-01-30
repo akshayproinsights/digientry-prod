@@ -1,5 +1,5 @@
 """Inventory upload and processing routes"""
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 import logging
