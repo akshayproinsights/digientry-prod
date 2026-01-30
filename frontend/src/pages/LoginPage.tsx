@@ -48,7 +48,7 @@ const LoginPage: React.FC = () => {
                     <div className="text-center mb-8">
                         <div className="flex items-center justify-center gap-4 mb-4">
                             <img
-                                src="/digientry-logo.png"
+                                src="/digientry_logo.png"
                                 alt="DigiEntry Logo"
                                 className="w-[150px] h-auto object-contain"
                             />

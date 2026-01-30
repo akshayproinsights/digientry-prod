@@ -431,15 +431,10 @@ const CurrentStockPage: React.FC = () => {
 
     // Trigger stock calculation
     const handleCalculateStock = async () => {
-        if (!confirm('Recalculate all stock levels from existing data? This may take a moment.')) {
-            return;
-        }
-
         try {
             setIsCalculating(true);
             await calculateStockLevels();
             await loadData();
-            alert('Stock levels recalculated successfully!');
         } catch (error) {
             console.error('Error calculating stock:', error);
             alert('Failed to calculate stock levels');
@@ -1137,7 +1132,7 @@ const CurrentStockPage: React.FC = () => {
                                         Item Details
                                     </th>
                                     {/* Col 2: Customer Item - 1% */}
-                                    <th className="px-2 py-2 text-left text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap">
+                                    <th className="px-2 py-2 text-left text-[11px] font-bold text-gray-500 uppercase w-[1%]">
                                         Customer Item
                                     </th>
                                     {/* Col 3: Priority - 1% */}
@@ -1211,9 +1206,9 @@ const CurrentStockPage: React.FC = () => {
                                                 </td>
 
                                                 {/* Col 1: Item Details - Fluid (w-auto) + Truncate */}
-                                                <td className="px-2 py-2 w-auto max-w-[200px] sm:max-w-xs md:max-w-md lg:max-w-xl truncate">
-                                                    <div className="flex flex-col gap-0.5 truncate">
-                                                        <span className="text-sm text-gray-900 font-medium leading-tight truncate" title={item.internal_item_name}>
+                                                <td className="px-2 py-2 w-auto max-w-[200px] sm:max-w-xs md:max-w-md lg:max-w-xl">
+                                                    <div className="flex flex-col gap-0.5">
+                                                        <span className="text-sm text-gray-900 font-medium leading-tight" title={item.internal_item_name}>
                                                             {item.internal_item_name}
                                                         </span>
                                                         <span className="inline-flex items-center">
@@ -1225,11 +1220,10 @@ const CurrentStockPage: React.FC = () => {
                                                 </td>
 
                                                 {/* Col 2: Customer Item - 1% + Input EXPANDED Width (w-60) */}
-                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-sm">
+                                                <td className="px-2 py-2 w-[1%] text-sm">
                                                     <div className="flex items-center gap-2">
                                                         <div className="relative w-60">
-                                                            <input
-                                                                type="text"
+                                                            <textarea
                                                                 value={localCustomerItems[item.id] || ''}
                                                                 onFocus={() => {
                                                                     // Don't open dropdown or load suggestions on focus
@@ -1251,12 +1245,14 @@ const CurrentStockPage: React.FC = () => {
                                                                 }}
                                                                 onBlur={() => handleCustomerItemBlur(item)}
                                                                 placeholder={hasCustomerItem ? "" : "Select..."}
-                                                                className={`w-full px-2 py-1.5 border rounded text-sm font-medium transition-colors truncate block ${isFlashing
+                                                                rows={hasCustomerItem ? 2 : 1}
+                                                                className={`w-full px-2 py-1.5 border rounded text-sm font-medium transition-colors block resize-none overflow-hidden focus:overflow-auto ${isFlashing
                                                                     ? 'bg-green-200 ring-2 ring-green-400 border-green-500'
                                                                     : hasCustomerItem
                                                                         ? 'border-green-500 bg-green-50 text-green-700 pr-5'
                                                                         : 'border-amber-400 border-dashed bg-white text-gray-600 pr-2'
                                                                     }`}
+                                                                style={{ minHeight: '38px' }}
                                                             />
 
                                                             {/* Clear button (X) for mapped items */}
@@ -1646,11 +1642,7 @@ const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = ({ partN
                 </div>
 
                 {/* Summary Cards */}
-                <div className="grid grid-cols-4 gap-4 p-6 border-b border-gray-200 bg-gray-50">
-                    <div className="text-center">
-                        <p className="text-sm text-gray-600">Old Stock</p>
-                        <p className="text-2xl font-bold text-blue-600">{summary.old_stock ?? '-'}</p>
-                    </div>
+                <div className="grid grid-cols-3 gap-4 p-6 border-b border-gray-200 bg-gray-50">
                     <div className="text-center">
                         <p className="text-sm text-gray-600">Total IN</p>
                         <p className="text-2xl font-bold text-green-600">{summary.total_in.toFixed(2)}</p>

@@ -1447,9 +1447,9 @@ async def export_inventory_count_sheet(
             wrapped_row = [
                 row[0],  # #
                 PDFParagraph(row[1], cell_style),  # Vendor Description - wrapped
-                row[2],  # Part Number
+                PDFParagraph(row[2], cell_style),  # Part Number - wrapped
                 PDFParagraph(row[3], cell_style), # Customer Item - wrapped
-                row[4],  # Priority
+                PDFParagraph(row[4], cell_style),  # Priority - wrapped
                 row[5],  # Actual Stock - blank
                 row[6]   # Reorder - blank
             ]

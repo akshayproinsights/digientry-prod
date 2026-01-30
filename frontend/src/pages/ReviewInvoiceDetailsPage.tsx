@@ -792,10 +792,10 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                                 setItemToDelete({ type: 'header', id: null, receiptNumber: headerRecord['Receipt Number'] });
                                                                 setDeleteConfirmOpen(true);
                                                             }}
-                                                            className="px-4 py-2 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg border border-red-300 transition-colors flex items-center gap-2 font-medium"
+                                                            className="px-3 py-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md border border-transparent hover:border-red-200 transition-colors flex items-center gap-1.5 text-xs font-medium"
                                                             title="Delete entire receipt"
                                                         >
-                                                            <Trash2 size={18} />
+                                                            <Trash2 size={14} />
                                                             <span>Delete</span>
                                                         </button>
                                                     )}

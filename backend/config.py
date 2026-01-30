@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = Field(default=1440, alias="JWT_EXPIRE_MINUTES")  # 24 hours
     
     # CORS
-    cors_origins: list = Field(default=["http://localhost:3000", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "https://digientry-prod.web.app"], alias="CORS_ORIGINS")
+    cors_origins: list = Field(default=["http://localhost:3000", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "https://digientry-prod.web.app", "https://mydigientry.com", "https://www.mydigientry.com"], alias="CORS_ORIGINS")
     
     # Google API
     google_api_key: Optional[str] = Field(default=None, alias="GOOGLE_API_KEY")
