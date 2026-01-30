@@ -48,7 +48,7 @@ jobs:
         with:
           service: digientry-backend
           source: ./backend
-          region: us-central1
+          region: asia-south1
           env_vars: |
             SUPABASE_URL=${{ secrets.SUPABASE_URL }}
             SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
@@ -77,16 +77,17 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      # Verify Cloud Run Service Exists (Debugging 404 error)
+      # Verify Cloud Run Service Exists (Checking asia-south1)
       - name: Verify Cloud Run Service
         run: |
           echo "Checking if Cloud Run service 'digientry-backend' exists..."
-          gcloud run services describe digientry-backend --region us-central1 --format "value(status.url)" || echo "::warning::Service 'digientry-backend' not found or not accessible!"
+          gcloud run services describe digientry-backend --region asia-south1 --format "value(status.url)" || echo "::warning::Service 'digientry-backend' not found or not accessible!"
       
-      # FIX: Changed 'npm ci' to 'npm install' to prevent crashes
+      # FIX: Changed 'npm ci' to 'npm install' to prevent crashes. REMOVED bad VITE_API_URL override.
       - name: Install & Build React
         env:
-          VITE_API_URL: /
+           # Explicitly set the Asia backend URL for the build
+           VITE_API_URL: https://digientry-backend-112233610459.asia-south1.run.app
         run: npm install && npm run build
         working-directory: ./frontend
         

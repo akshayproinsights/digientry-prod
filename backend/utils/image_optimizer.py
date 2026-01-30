@@ -49,6 +49,26 @@ def optimize_image_for_gemini(
     logger.info(f"Original image: {original_dimensions[0]}x{original_dimensions[1]}, "
                 f"{original_size / 1024:.2f}KB, format: {original_format}")
     
+    # -----------------------------------------------------------
+    # FAST PATH: Skip processed optimization if frontend already did it
+    # -----------------------------------------------------------
+    size_kb = original_size / 1024
+    if size_kb <= 600 and original_format == 'JPEG':
+        width, height = original_dimensions
+        if width <= max_dimension and height <= max_dimension:
+            logger.info(f"⚡ Fast Path: Image already optimized ({size_kb:.2f}KB, {width}x{height}, JPEG). Skipping re-processing.")
+            metadata = {
+                'original_size_kb': round(size_kb, 2),
+                'optimized_size_kb': round(size_kb, 2),
+                'original_dimensions': original_dimensions,
+                'final_dimensions': original_dimensions,
+                'compression_ratio': 0.0,
+                'quality': 'original',
+                'original_format': 'JPEG',
+                'optimized_format': 'JPEG'
+            }
+            return image_data, metadata
+    
     # Convert RGBA to RGB (removes alpha channel for JPEG compression)
     if original_img.mode in ('RGBA', 'LA', 'P'):
         # Create white background

@@ -17,8 +17,8 @@ from database import get_database_client
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Thread pool for blocking operations (increased for bulk uploads)
-executor = ThreadPoolExecutor(max_workers=25)
+# Thread pool for blocking operations (Optimized for 2 vCPU: 4 workers x 5 threads = 20 concurrent tasks)
+executor = ThreadPoolExecutor(max_workers=5)
 
 # In-memory storage REMOVED - using database table 'upload_tasks'
 # processing_status: Dict[str, Dict[str, Any]] = {}
@@ -100,18 +100,16 @@ async def test_post_endpoint(
 async def upload_files(
     files: List[UploadFile] = File(...),
     current_user: Dict[str, Any] = Depends(get_current_user),
-    r2_bucket: str = Depends(get_current_user_r2_bucket)
+    r2_bucket: str = Depends(get_current_user_r2_bucket),
+    background_tasks: BackgroundTasks = None
 ):
     """
-    Accept files from frontend and save temporarily on server.
-    Returns immediately with temp file references.
-    R2 upload will happen in background when processing starts.
+    Accept files from frontend and initiate background upload to R2.
+    Returns immediately with file_keys for processing.
+    The actual R2 upload happens asynchronously in the background.
     """
     import asyncio
     
-    # 1. Read all files into memory (concurrently read if possible, but File read is async)
-    # Be careful with memory usage for huge files, but invoices are small images
-    uploads = []
     username = current_user.get("username", "user")
     
     try:
@@ -120,44 +118,51 @@ async def upload_files(
         logger.info(f"Number of files: {len(files)}")
         logger.info(f"Filenames: {[f.filename for f in files]}")
         
-        # Prepare arguments for threaded execution
-        upload_tasks = []
-        loop = asyncio.get_event_loop()
+        # Pre-generate file_keys and read file bytes immediately
+        # (UploadFile objects close when request ends, so we must read now)
+        file_data_list = []
+        file_keys = []
         
         for file in files:
+            # Read file bytes into memory
             content = await file.read()
-            # Schedule upload in thread pool
-            task = loop.run_in_executor(
-                executor,
-                upload_single_file_sync,
-                content,
-                file.filename,
-                username,
-                r2_bucket
-            )
-            upload_tasks.append(task)
-        
-        # Wait for all uploads to finish
-        logger.info(f"Uploading {len(files)} files to R2 in parallel...")
-        results = await asyncio.gather(*upload_tasks)
-        
-        # Filter successful uploads (None indicates failure)
-        uploaded_keys = [key for key in results if key is not None]
-        
-        if len(uploaded_keys) == 0 and len(files) > 0:
-            raise HTTPException(status_code=500, detail="Failed to upload any files to storage")
             
-        logger.info(f"Successfully uploaded {len(uploaded_keys)}/{len(files)} files to R2")
+            # Generate file_key deterministically (same logic as before)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            sales_folder = get_sales_folder(username)
+            file_key = f"{sales_folder}{timestamp}_{file.filename}"
+            
+            file_data_list.append({
+                'content': content,
+                'filename': file.filename,
+                'file_key': file_key
+            })
+            file_keys.append(file_key)
         
+        logger.info(f"Generated {len(file_keys)} file keys for upload")
+        
+        # Schedule background uploads
+        for file_data in file_data_list:
+            background_tasks.add_task(
+                upload_single_file_sync,
+                file_data['content'],
+                file_data['filename'],
+                username,
+                r2_bucket,
+                file_data['file_key']  # Pass pre-generated key
+            )
+        
+        logger.info(f"Scheduled {len(file_data_list)} background upload tasks")
+        
+        # Return immediately with file_keys
         return {
             "success": True,
-            "uploaded_files": uploaded_keys,  # These are now R2 KEYS
-            "message": f"Uploaded {len(uploaded_keys)} of {len(files)} file(s)"
+            "uploaded_files": file_keys,  # These are R2 keys (not yet uploaded, but will be)
+            "message": f"Uploading {len(file_keys)} file(s) in background"
         }
         
     except Exception as e:
         logger.error(f"Error in upload_files: {e}")
-        # traceback
         import traceback
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
@@ -167,19 +172,25 @@ def upload_single_file_sync(
     content: bytes,
     filename: str,
     username: str,
-    r2_bucket: str
+    r2_bucket: str,
+    file_key: str  # NEW: Accept pre-generated key
 ) -> Optional[str]:
     """
-    Synchronous helper for single file upload - runs in thread pool.
+    Synchronous helper for single file upload - runs in background task.
     Contains blocking operations: image validation, optimization, and R2 upload.
+    
+    Args:
+        content: File content bytes
+        filename: Original filename (for logging)
+        username: Username (for logging)
+        r2_bucket: R2 bucket name
+        file_key: Pre-generated R2 key (path)
+    
+    Returns:
+        File key if successful, None otherwise
     """
     try:
         storage = get_storage_client()
-        
-        # Generate unique key using centralized folder function
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        sales_folder = get_sales_folder(username)
-        file_key = f"{sales_folder}{timestamp}_{filename}"
         
         # Validate image quality
         validation = validate_image_quality(content)
@@ -204,7 +215,7 @@ def upload_single_file_sync(
         # Determine content type (always JPEG after optimization)
         content_type = "image/jpeg"  # Our optimizer always outputs JPEG
         
-        # Upload to R2
+        # Upload to R2 using pre-generated key
         success = storage.upload_file(
             file_data=content,
             bucket=r2_bucket,

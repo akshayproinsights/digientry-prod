@@ -89,29 +89,51 @@ class R2StorageClient:
             logger.error(f"Failed to upload to R2: {e}")
             return False
     
-    def download_file(self, bucket: str, key: str) -> Optional[bytes]:
+    def download_file(self, bucket: str, key: str, max_retries: int = 5, retry_delay: float = 1.0) -> Optional[bytes]:
         """
-        Download a file from R2
+        Download a file from R2 with retry logic for async upload race conditions
         
         Args:
             bucket: R2 bucket name
             key: Object key (path) in R2
+            max_retries: Maximum number of retry attempts (default: 5)
+            retry_delay: Delay in seconds between retries (default: 1.0)
         
         Returns:
-            File contents as bytes, or None if failed
+            File contents as bytes, or None if failed after all retries
         """
-        try:
-            client = self.get_client()
-            
-            response = client.get_object(Bucket=bucket, Key=key)
-            file_data = response['Body'].read()
-            
-            logger.info(f"Downloaded from R2: {bucket}/{key}")
-            return file_data
+        import time
         
-        except ClientError as e:
-            logger.error(f"Failed to download from R2: {e}")
-            return None
+        client = self.get_client()
+        
+        for attempt in range(max_retries):
+            try:
+                response = client.get_object(Bucket=bucket, Key=key)
+                file_data = response['Body'].read()
+                
+                if attempt > 0:
+                    logger.info(f"Downloaded from R2 on attempt {attempt + 1}: {bucket}/{key}")
+                else:
+                    logger.info(f"Downloaded from R2: {bucket}/{key}")
+                return file_data
+            
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '')
+                
+                # If file not found and we have retries left, wait and retry
+                if error_code == 'NoSuchKey' and attempt < max_retries - 1:
+                    logger.warning(f"File not found (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {bucket}/{key}")
+                    time.sleep(retry_delay)
+                    continue
+                
+                # For other errors or final attempt, log and return None
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to download from R2 after {max_retries} attempts: {e}")
+                else:
+                    logger.error(f"Failed to download from R2: {e}")
+                return None
+        
+        return None
     
     def delete_file(self, bucket: str, key: str) -> bool:
         """

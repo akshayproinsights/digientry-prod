@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import DuplicateWarningModal from '../components/DuplicateWarningModal';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import { useGlobalStatus } from '../contexts/GlobalStatusContext';
+import imageCompression from 'browser-image-compression';
 
 const InventoryUploadPage: React.FC = () => {
     const navigate = useNavigate();
@@ -356,7 +357,38 @@ const InventoryUploadPage: React.FC = () => {
             let processedCount = 0;
 
             for (let i = 0; i < totalFiles; i += BATCH_SIZE) {
-                const batch = files.slice(i, i + BATCH_SIZE);
+                const rawBatch = files.slice(i, i + BATCH_SIZE);
+
+                // Compress batch
+                const batch: File[] = [];
+                for (const file of rawBatch) {
+                    if (file.type.startsWith('image/')) {
+                        try {
+                            console.log(`📉 [COMPRESS] Compressing ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)...`);
+                            const options = {
+                                maxSizeMB: 0.5,           // Target 500KB
+                                maxWidthOrHeight: 1920,   // Backend limit
+                                useWebWorker: true,
+                                fileType: 'image/jpeg'
+                            };
+                            const compressedBlob = await imageCompression(file, options);
+
+                            // Re-create File object
+                            const compressedFile = new File([compressedBlob], file.name, {
+                                type: compressedBlob.type,
+                                lastModified: Date.now()
+                            });
+
+                            console.log(`📉 [COMPRESS] Success: ${file.name} -> ${(compressedFile.size / 1024 / 1024).toFixed(2)}MB`);
+                            batch.push(compressedFile);
+                        } catch (error) {
+                            console.error(`❌ [COMPRESS] Failed for ${file.name}, using original:`, error);
+                            batch.push(file);
+                        }
+                    } else {
+                        batch.push(file);
+                    }
+                }
 
                 const response = await inventoryAPI.uploadFiles(batch, (progressEvent) => {
                     const batchPercent = progressEvent.loaded / progressEvent.total;

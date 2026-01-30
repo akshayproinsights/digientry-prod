@@ -20,7 +20,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Thread pool for blocking operations
-executor = ThreadPoolExecutor(max_workers=10)
+executor = ThreadPoolExecutor(max_workers=3)
 
 # In-memory storage for processing status
 inventory_processing_status: Dict[str, Dict[str, Any]] = {}
@@ -60,11 +60,12 @@ class InventoryProcessStatusResponse(BaseModel):
 async def upload_inventory_files(
     files: List[UploadFile] = File(...),
     current_user: Dict[str, Any] = Depends(get_current_user),
-    r2_bucket: str = Depends(get_current_user_r2_bucket)
+    r2_bucket: str = Depends(get_current_user_r2_bucket),
+    background_tasks: BackgroundTasks = None
 ):
     """
-    Upload inventory files directly to R2 storage.
-    Now matches the parallel upload strategy of sales/upload.py.
+    Upload inventory files to R2 storage asynchronously.
+    Returns immediately with file_keys while uploads happen in background.
     """
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
@@ -73,42 +74,47 @@ async def upload_inventory_files(
     logger.info(f"Received {len(files)} files for inventory upload from {username}")
     
     try:
-        # Prepare for parallel upload
-        upload_tasks = []
-        uploaded_keys = []
-        
         inventory_folder = get_purchases_folder(username)
-        # We need to read files effectively before passing to thread pool
-        loop = asyncio.get_event_loop()
+        
+        # Pre-generate file_keys and read file bytes immediately
+        file_data_list = []
+        file_keys = []
         
         for file in files:
+            # Read file bytes into memory
             content = await file.read()
             
-            # Submit to thread pool
-            upload_tasks.append(
-                loop.run_in_executor(
-                    executor,
-                    upload_single_inventory_file_sync,
-                    content,
-                    file.filename,
-                    username,
-                    r2_bucket,
-                    inventory_folder
-                )
+            # Generate file_key deterministically
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_key = f"{inventory_folder}{timestamp}_{file.filename}"
+            
+            file_data_list.append({
+                'content': content,
+                'filename': file.filename,
+                'file_key': file_key
+            })
+            file_keys.append(file_key)
+        
+        logger.info(f"Generated {len(file_keys)} inventory file keys for upload")
+        
+        # Schedule background uploads
+        for file_data in file_data_list:
+            background_tasks.add_task(
+                upload_single_inventory_file_sync,
+                file_data['content'],
+                file_data['filename'],
+                username,
+                r2_bucket,
+                file_data['file_key']
             )
         
-        # Wait for all uploads to complete
-        results = await asyncio.gather(*upload_tasks)
+        logger.info(f"Scheduled {len(file_data_list)} background inventory upload tasks")
         
-        # Collect successful keys
-        for result in results:
-            if result:
-                uploaded_keys.append(result)
-        
+        # Return immediately with file_keys
         return {
             "success": True,
-            "uploaded_files": uploaded_keys,  # These are now R2 KEYS
-            "message": f"Uploaded {len(uploaded_keys)} of {len(files)} file(s)"
+            "uploaded_files": file_keys,
+            "message": f"Uploading {len(file_keys)} file(s) in background"
         }
         
     except Exception as e:
@@ -121,17 +127,24 @@ def upload_single_inventory_file_sync(
     filename: str,
     username: str,
     r2_bucket: str,
-    inventory_folder: str
+    file_key: str  # NEW: Accept pre-generated key
 ) -> Optional[str]:
     """
-    Synchronous helper for single inventory file upload
+    Synchronous helper for single inventory file upload - runs in background task.
+    Contains blocking operations: image validation, optimization, and R2 upload.
+    
+    Args:
+        content: File content bytes
+        filename: Original filename (for logging)
+        username: Username (for logging)
+        r2_bucket: R2 bucket name
+        file_key: Pre-generated R2 key (path)
+    
+    Returns:
+        File key if successful, None otherwise
     """
     try:
         storage = get_storage_client()
-        
-        # Generate unique key in vendor_invoices folder
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_key = f"{inventory_folder}{timestamp}_{filename}"
         
         # Validate image quality
         validation = validate_image_quality(content)
@@ -153,9 +166,10 @@ def upload_single_inventory_file_sync(
         else:
             logger.info(f"Skipping optimization for {filename}")
         
+        # Determine content type (always JPEG after optimization)
         content_type = "image/jpeg"
         
-        # Upload to R2 vendor_invoices folder
+        # Upload to R2 using pre-generated key
         success = storage.upload_file(
             file_data=content,
             bucket=r2_bucket,
@@ -171,7 +185,9 @@ def upload_single_inventory_file_sync(
             return None
             
     except Exception as e:
-        logger.error(f"Error in upload_single_inventory_file_sync for {filename}: {e}")
+        logger.error(f"Error uploading inventory file {filename}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 

@@ -25,4 +25,4 @@ EXPOSE 8080
 # Run gunicorn when the container launches
 # Using 8 workers to optimize for 4 CPU cores (2x workers per core is a common starting point)
 # Timeout 0 is recommended for Cloud Run to let the platform handle timeouts
-CMD gunicorn --workers 12 --worker-class uvicorn.workers.UvicornWorker --timeout 0 --bind 0.0.0.0:${PORT:-8080} main:app
+CMD gunicorn --workers 4 --worker-class uvicorn.workers.UvicornWorker --timeout 0 --bind 0.0.0.0:${PORT:-8080} main:app
