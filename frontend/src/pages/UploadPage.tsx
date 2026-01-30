@@ -549,7 +549,7 @@ const UploadPage: React.FC = () => {
 
                     if (status.status === 'completed') {
                         // Call finishProcessing to properly set completion state
-                        // This keeps files visible and shows Review Sales button
+                        // This keeps files visible and shows Review & Sync button
                         finishProcessing(status);
                     } else {
                         setIsProcessing(false);
@@ -1207,7 +1207,7 @@ const UploadPage: React.FC = () => {
                                             className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 px-4 rounded-lg transition flex items-center justify-center gap-2 shadow-sm"
                                         >
                                             <CheckCircle size={18} />
-                                            Review Sales →
+                                            Review & Sync →
                                         </button>
                                         <button
                                             onClick={() => {

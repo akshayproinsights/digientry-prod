@@ -44,7 +44,7 @@ const ActionCards: React.FC<ActionCardsProps> = ({
     const cards: ActionCard[] = [
         {
             id: 'pending-bills',
-            title: 'Review Bill Uploads',
+            title: 'Review & Sync',
             value: pendingBillsCount,
             icon: ScanBarcode,
             themeColor: 'blue',

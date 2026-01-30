@@ -46,24 +46,16 @@ const LoginPage: React.FC = () => {
                 <div className="w-full max-w-md">
                     {/* Logo & Brand */}
                     <div className="text-center mb-8">
-                        <div className="flex items-center justify-center gap-4 mb-4">
+                        <div className="flex items-center justify-center mb-6">
                             <img
                                 src="/digientry_logo.png"
-                                alt="DigiEntry Logo"
-                                className="w-[150px] h-auto object-contain"
+                                alt="DigiEntry - Smart Digital Munim"
+                                className="w-[200px] h-auto object-contain"
                             />
-                            <div className="text-left">
-                                <h1 className="text-4xl font-bold text-[#1a3a52] leading-tight">
-                                    DigiEntry
-                                </h1>
-                                <p className="text-base text-gray-500 mt-1">
-                                    Smart Digital Munim
-                                </p>
-                            </div>
                         </div>
 
                         {/* Trust Badge for Indian SMBs */}
-                        <div className="flex items-center justify-center gap-4 text-xs text-gray-600 mt-4">
+                        <div className="flex items-center justify-center gap-4 text-xs text-gray-600">
                             <div className="flex items-center gap-1">
                                 <Shield className="w-4 h-4 text-green-600" />
                                 <span className="font-medium">100% Secure</span>

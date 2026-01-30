@@ -38,7 +38,7 @@ const Layout: React.FC = () => {
             return `${greeting}, ${user?.username || 'User'}`;
         }
 
-        // Special case: Review Sales - hide Layout header completely
+        // Special case: Review & Sync - hide Layout header completely
         if (path === '/sales/review') {
             return '';
         }

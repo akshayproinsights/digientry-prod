@@ -48,7 +48,7 @@ const Sidebar: React.FC = () => {
             isSection: true,
             children: [
                 { name: 'Add Sales Bills', path: '/sales/upload', icon: Upload },
-                { name: 'Review Sales', path: '/sales/review', icon: ClipboardCheck },
+                { name: 'Review & Sync', path: '/sales/review', icon: ClipboardCheck },
                 { name: 'All Past Sales', path: '/sales/verified', icon: CheckCircle },
             ]
         },
@@ -90,7 +90,7 @@ const Sidebar: React.FC = () => {
 
         // Sales badge removed as per request
 
-        if (name === 'Review Sales') {
+        if (name === 'Review & Sync') {
             const totalReview = sales.reviewCount + sales.syncCount;
             if (totalReview > 0) {
                 return (
