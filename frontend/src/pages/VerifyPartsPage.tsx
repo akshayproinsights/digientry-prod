@@ -57,6 +57,8 @@ const VerifyPartsPage: React.FC = () => {
     const [validationErrors, setValidationErrors] = useState<Record<number, ValidationError[]>>({});
     const [isExporting, setIsExporting] = useState(false);
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+    const [saveStatus, setSaveStatus] = useState<'idle' | 'editing' | 'saving' | 'saved'>('idle');
+    const [errorNotification, setErrorNotification] = useState<string | null>(null);
 
     // Selection states
     const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -145,27 +147,44 @@ const VerifyPartsPage: React.FC = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isExporting, selectedIds]);
 
-    // Update item mutation
+    // Individual item update mutation
     const updateItemMutation = useMutation({
         mutationFn: async ({ id, updates }: { id: number; updates: Record<string, any> }) => {
+            setSaveStatus('saving');
+            setErrorNotification(null);
             return inventoryAPI.updateInventoryItem(id, updates);
         },
         onSuccess: (_data, variables) => {
-            // Update local state instead of refetching (row position locking)
-            const updatedItems = items.map(item =>
-                item.id === variables.id ? { ...item, ...variables.updates } : item
-            );
-            setItems(updatedItems);
+            // Update local state to reflect changes without full refetch if possible
+            // We keep the editing state open for a moment to show "Saved"
 
-            setEditingId(null);
-            setEditedItem(null);
-            setValidationErrors({});
-            setHasUnsavedChanges(false);
-            isAutoSavingRef.current = false;
+            // Update local items state for immediate feedback
+            setItems(prevItems =>
+                prevItems.map(item =>
+                    item.id === variables.id
+                        ? { ...item, ...variables.updates }
+                        : item
+                )
+            );
+
+            setSaveStatus('saved');
+
+            // Clear edit state after a brief delay
+            setTimeout(() => {
+                setEditingId(null);
+                setEditedItem(null);
+                setValidationErrors({});
+                setHasUnsavedChanges(false);
+                setSaveStatus('idle');
+                isAutoSavingRef.current = false;
+            }, 3000);
         },
         onError: (error) => {
             isAutoSavingRef.current = false;
-            alert(`Error updating item: ${error instanceof Error ? error.message : 'Unknown error'} `);
+            setSaveStatus('editing');
+            const errorMsg = error instanceof Error ? error.message : 'Unable to update. Please try again.';
+            setErrorNotification(errorMsg);
+            setTimeout(() => setErrorNotification(null), 5000);
         }
     });
 
@@ -232,9 +251,11 @@ const VerifyPartsPage: React.FC = () => {
     const performAutoSave = () => {
         if (!editedItem || editingId === null) return;
 
-        const errors = validationErrors[editedItem.id] || [];
+        const errors = validationErrors[editingId] || []; // Fix: use editingId key
         if (errors.length > 0) {
             // Don't auto-save if there are validation errors
+            setErrorNotification('Please fix validation errors before saving.');
+            setTimeout(() => setErrorNotification(null), 5000);
             return;
         }
 
@@ -248,14 +269,33 @@ const VerifyPartsPage: React.FC = () => {
             // Prepare updates
             const updates: Record<string, any> = {};
             Object.keys(editedItem).forEach(key => {
-                if (editedItem[key] !== originalItem?.[key]) {
-                    updates[key] = editedItem[key];
+                // @ts-ignore - Index signature
+                const editedValue = editedItem[key];
+                // @ts-ignore - Index signature
+                const originalValue = originalItem?.[key];
+
+                if (editedValue !== originalValue) {
+                    updates[key] = editedValue;
                 }
             });
 
             if (Object.keys(updates).length > 0) {
                 updateItemMutation.mutate({ id: editedItem.id, updates });
+            } else {
+                // No actual changes logic
+                setEditingId(null);
+                setEditedItem(null);
+                setValidationErrors({});
+                setHasUnsavedChanges(false);
+                setSaveStatus('idle');
             }
+        } else if (!hasChanges) {
+            // No changes, just exit
+            setEditingId(null);
+            setEditedItem(null);
+            setValidationErrors({});
+            setHasUnsavedChanges(false);
+            setSaveStatus('idle');
         }
     };
 
@@ -270,10 +310,17 @@ const VerifyPartsPage: React.FC = () => {
 
     // Handle edit button click
     const handleEdit = (item: InventoryItem) => {
+        // Auto-save previous row if editing another one
+        if (editingId !== null && editingId !== item.id && hasUnsavedChanges) {
+            performAutoSave();
+        }
+
         setEditingId(item.id);
         setEditedItem({ ...item });
         setValidationErrors(prev => ({ ...prev, [item.id]: [] }));
         setHasUnsavedChanges(false);
+        setSaveStatus('editing');
+        setErrorNotification(null);
         clearAutoSaveTimer();
     };
 
@@ -284,6 +331,8 @@ const VerifyPartsPage: React.FC = () => {
         setEditedItem(null);
         setValidationErrors({});
         setHasUnsavedChanges(false);
+        setSaveStatus('idle');
+        setErrorNotification(null);
     };
 
     // Handle field change with debounced auto-save
@@ -306,21 +355,26 @@ const VerifyPartsPage: React.FC = () => {
 
         setEditedItem({ ...editedItem, [field]: value });
         setHasUnsavedChanges(true);
+        setSaveStatus('editing');
 
         // Clear existing timer
         clearAutoSaveTimer();
 
-        // Set new timer for debounced auto-save (2 seconds)
+        // Set new timer for debounced auto-save (10 seconds)
         autoSaveTimerRef.current = setTimeout(() => {
             performAutoSave();
-        }, 2000);
+        }, 10000);
     };
 
-    // Handle save (manual save button)
-    const handleSave = () => {
-        clearAutoSaveTimer();
-        performAutoSave();
+    // Handle clicking away from a row (blur) - auto-save immediately
+    const handleRowBlur = () => {
+        if (hasUnsavedChanges && editingId !== null) {
+            clearAutoSaveTimer();
+            performAutoSave();
+        }
     };
+
+
 
     // Handle export
     const handleExport = async () => {
@@ -624,7 +678,18 @@ const VerifyPartsPage: React.FC = () => {
                 </div>
             ) : (
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    {/* Error Notification */}
+                    {errorNotification && (
+                        <div className="mx-6 mt-6 bg-red-50 border border-red-300 text-red-800 px-4 py-3 rounded-lg flex items-start gap-3">
+                            <span className="text-red-600 font-bold text-lg">⚠</span>
+                            <div className="flex-1">
+                                <p className="font-medium">Error</p>
+                                <p className="text-sm">{errorNotification}</p>
+                            </div>
+                        </div>
+                    )}
                     <div className="px-6 py-4 border-b border-gray-200">
+
                         <p className="text-sm text-gray-600">
                             Showing <span className="font-medium">{filteredItems.length}</span> of <span className="font-medium">{items.length}</span> items
                         </p>
@@ -664,7 +729,18 @@ const VerifyPartsPage: React.FC = () => {
                                     const currentItem = isEditing && editedItem ? editedItem : item;
 
                                     return (
-                                        <tr key={item.id} className="hover:bg-gray-50">
+                                        <tr
+                                            key={item.id}
+                                            className="hover:bg-gray-50"
+                                            onBlur={(e) => {
+                                                // Only trigger blur if clicking outside the row
+                                                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                                                    if (isEditing) {
+                                                        handleRowBlur();
+                                                    }
+                                                }
+                                            }}
+                                        >
                                             {/* Checkbox */}
                                             <td className="px-4 py-3">
                                                 <button
@@ -682,7 +758,8 @@ const VerifyPartsPage: React.FC = () => {
                                                         type="text"
                                                         value={currentItem.invoice_number || ''}
                                                         onChange={(e) => handleFieldChange('invoice_number', e.target.value)}
-                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                     />
                                                 ) : (
                                                     item.receipt_link ? (
@@ -708,7 +785,8 @@ const VerifyPartsPage: React.FC = () => {
                                                         type="date"
                                                         value={currentItem.invoice_date || ''}
                                                         onChange={(e) => handleFieldChange('invoice_date', e.target.value)}
-                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{item.invoice_date || '—'}</span>
@@ -722,7 +800,8 @@ const VerifyPartsPage: React.FC = () => {
                                                         type="text"
                                                         value={currentItem.vendor_name || ''}
                                                         onChange={(e) => handleFieldChange('vendor_name', e.target.value)}
-                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                         placeholder="Vendor"
                                                     />
                                                 ) : (
@@ -739,7 +818,8 @@ const VerifyPartsPage: React.FC = () => {
                                                         type="text"
                                                         value={currentItem.part_number || ''}
                                                         onChange={(e) => handleFieldChange('part_number', e.target.value)}
-                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900 break-all">{item.part_number || '—'}</span>
@@ -753,7 +833,8 @@ const VerifyPartsPage: React.FC = () => {
                                                         type="text"
                                                         value={currentItem.description || ''}
                                                         onChange={(e) => handleFieldChange('description', e.target.value)}
-                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900 max-w-[150px] truncate block" title={item.description}>
@@ -769,7 +850,8 @@ const VerifyPartsPage: React.FC = () => {
                                                         type="text"
                                                         value={currentItem.hsn || ''}
                                                         onChange={(e) => handleFieldChange('hsn', e.target.value)}
-                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{item.hsn || '—'}</span>
@@ -784,7 +866,8 @@ const VerifyPartsPage: React.FC = () => {
                                                             type="number"
                                                             value={currentItem.qty || ''}
                                                             onChange={(e) => handleFieldChange('qty', e.target.value)}
-                                                            className={`w-full px-1 py-1 border rounded focus:ring-1 focus:ring-blue-500 text-xs ${getFieldError(item.id, 'qty') ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                                                            disabled={saveStatus === 'saving'}
+                                                            className={`w-full px-1 py-1 border rounded focus:ring-1 focus:ring-blue-500 text-xs disabled:bg-gray-100 disabled:cursor-not-allowed ${getFieldError(item.id, 'qty') ? 'border-red-500 bg-red-50' : 'border-gray-300'
                                                                 } `}
                                                         />
                                                     </div>
@@ -802,7 +885,8 @@ const VerifyPartsPage: React.FC = () => {
                                                             step="0.01"
                                                             value={currentItem.rate || ''}
                                                             onChange={(e) => handleFieldChange('rate', e.target.value)}
-                                                            className={`w-full px-1 py-1 border rounded focus:ring-1 focus:ring-blue-500 text-xs ${getFieldError(item.id, 'rate') ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                                                            disabled={saveStatus === 'saving'}
+                                                            className={`w-full px-1 py-1 border rounded focus:ring-1 focus:ring-blue-500 text-xs disabled:bg-gray-100 disabled:cursor-not-allowed ${getFieldError(item.id, 'rate') ? 'border-red-500 bg-red-50' : 'border-gray-300'
                                                                 } `}
                                                         />
                                                     </div>
@@ -819,7 +903,8 @@ const VerifyPartsPage: React.FC = () => {
                                                         step="0.01"
                                                         value={currentItem.cgst_percent || ''}
                                                         onChange={(e) => handleFieldChange('cgst_percent', e.target.value)}
-                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{item.cgst_percent ? `${item.cgst_percent}% ` : '—'}</span>
@@ -834,7 +919,8 @@ const VerifyPartsPage: React.FC = () => {
                                                         step="0.01"
                                                         value={currentItem.sgst_percent || ''}
                                                         onChange={(e) => handleFieldChange('sgst_percent', e.target.value)}
-                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
+                                                        disabled={saveStatus === 'saving'}
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs disabled:bg-gray-100 disabled:cursor-not-allowed"
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{item.sgst_percent ? `${item.sgst_percent}% ` : '—'}</span>
@@ -880,17 +966,27 @@ const VerifyPartsPage: React.FC = () => {
                                             {/* Actions */}
                                             <td className="px-2 py-2 text-xs sticky right-0 bg-white shadow-sm">
                                                 {isEditing ? (
-                                                    <div className="flex gap-1">
-                                                        <button
-                                                            onClick={handleSave}
-                                                            className="text-green-600 hover:text-green-800 transition p-1"
-                                                            title="Save"
-                                                        >
-                                                            <Save size={16} />
-                                                        </button>
+                                                    <div className="flex gap-1 items-center">
+                                                        {/* Status Badge */}
+                                                        {saveStatus === 'editing' && (
+                                                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-yellow-100 text-yellow-800">
+                                                                ✏️
+                                                            </span>
+                                                        )}
+                                                        {saveStatus === 'saving' && (
+                                                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-100 text-blue-800">
+                                                                <Loader2 className="animate-spin" size={10} />
+                                                            </span>
+                                                        )}
+                                                        {saveStatus === 'saved' && (
+                                                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-800">
+                                                                ✓
+                                                            </span>
+                                                        )}
                                                         <button
                                                             onClick={handleCancelEdit}
-                                                            className="text-red-600 hover:text-red-800 transition p-1"
+                                                            disabled={saveStatus === 'saving'}
+                                                            className="text-red-600 hover:text-red-800 transition p-1 disabled:opacity-50"
                                                             title="Cancel"
                                                         >
                                                             <X size={16} />

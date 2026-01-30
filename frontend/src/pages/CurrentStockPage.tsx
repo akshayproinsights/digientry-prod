@@ -1295,7 +1295,10 @@ const CurrentStockPage: React.FC = () => {
                                                                         getDropdownOptions(item.id).map((vendorItem) => (
                                                                             <button
                                                                                 key={vendorItem.id}
-                                                                                onClick={() => handleSelectVendorItem(item, vendorItem)}
+                                                                                onMouseDown={(e) => {
+                                                                                    e.preventDefault(); // Prevent blur event from firing
+                                                                                    handleSelectVendorItem(item, vendorItem);
+                                                                                }}
                                                                                 className="w-full px-4 py-3 text-left hover:bg-blue-50 border-b last:border-b-0 transition"
                                                                             >
                                                                                 <div className="flex justify-between items-start">
