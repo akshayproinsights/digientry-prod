@@ -11,7 +11,7 @@
                 "source": "/api/**",
                 "run": {
                     "serviceId": "digientry-backend",
-                    "region": "us-central1"
+                    "region": "asia-south1"
                 }
             },
             {
