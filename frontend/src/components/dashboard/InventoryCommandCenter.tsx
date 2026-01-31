@@ -314,7 +314,7 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
                                                             className="flex items-center gap-1.5 px-2.5 h-8 rounded-md font-medium text-xs transition-all duration-200 active:scale-95 bg-indigo-600 text-white hover:bg-indigo-700"
                                                         >
                                                             <ShoppingCart size={14} />
-                                                            <span>Add to PO</span>
+                                                            <span>Add</span>
                                                         </button>
                                                     )}
                                                 </td>

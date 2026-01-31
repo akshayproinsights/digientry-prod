@@ -31,7 +31,10 @@ from utils.hash_utils import calculate_image_hash
 logger = logging.getLogger(__name__)
 
 # Configuration for parallel processing
-MAX_WORKERS = 3  # Process up to 3 invoices concurrently
+# Increased to 50 to handle high-load scenarios (100+ concurrent uploads)
+# Configurable via environment variable for different deployment sizes
+MAX_WORKERS = int(os.getenv('GEMINI_MAX_WORKERS', '50'))
+
 
 # Gemini System Instruction - NOW LOADED DYNAMICALLY per user
 # See config_loader.get_gemini_prompt(username) for user-specific prompts
@@ -80,7 +83,10 @@ class RateLimiter:
             time.sleep(wait_time)
 
 
-limiter = RateLimiter(rpm=30)
+# Rate limiter to match Gemini API quota
+# Pay-as-you-go tier: Flash=1500 RPM, Pro=1000 RPM
+# Increased from 30 to 1500 for high-load scenarios
+limiter = RateLimiter(rpm=int(os.getenv('GEMINI_RPM_LIMIT', '1500')))
 
 
 

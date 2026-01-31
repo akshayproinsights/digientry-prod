@@ -19,8 +19,9 @@ from config import get_purchases_folder
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Thread pool for blocking operations
-executor = ThreadPoolExecutor(max_workers=3)
+# Thread pool for blocking operations (Optimized for high-load: 50 concurrent tasks)
+# Configurable via environment variable
+executor = ThreadPoolExecutor(max_workers=int(os.getenv('INVENTORY_MAX_WORKERS', '50')))
 
 # In-memory storage for processing status
 inventory_processing_status: Dict[str, Dict[str, Any]] = {}
@@ -329,6 +330,21 @@ def process_inventory_sync(
             # ✓ Include top-level counts for frontend summary
             inventory_processing_status[task_id]["processed"] = results["processed"]
             inventory_processing_status[task_id]["duplicates"] = results.get("duplicates", [])
+            
+            # AUTO-RECALCULATION: Trigger stock recalculation after successful inventory processing
+            # This ensures stock levels are always up-to-date
+            # Advisory locks prevent race conditions with concurrent recalculations
+            if results["processed"] > 0:
+                logger.info(f"🔄 Auto-triggering stock recalculation for {username}...")
+                try:
+                    from routes.stock_routes import recalculate_stock_wrapper
+                    # Run in background (uses stock_executor thread pool)
+                    recalculate_stock_wrapper(username)
+                    logger.info(f"✅ Stock recalculation queued for {username}")
+                except Exception as e:
+                    logger.error(f"❌ Auto-recalculation failed for {username}: {e}")
+                    # Don't fail the upload if recalculation fails
+                    # User can manually trigger recalculation later
         
         inventory_processing_status[task_id]["end_time"] = datetime.now().isoformat()
         

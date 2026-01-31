@@ -104,10 +104,37 @@ export const getStockSummary = async (): Promise<StockSummary> => {
 };
 
 /**
- * Trigger stock level recalculation
+ * Trigger stock level recalculation (non-blocking background task)
  */
-export const calculateStockLevels = async (): Promise<void> => {
-    await apiClient.post('/api/stock/calculate');
+export const calculateStockLevels = async (): Promise<{ task_id: string }> => {
+    const response = await apiClient.post('/api/stock/calculate');
+    return response.data;
+};
+
+/**
+ * Get status of stock recalculation task
+ */
+export const getRecalculationStatus = async (taskId: string): Promise<{
+    task_id: string;
+    status: 'queued' | 'processing' | 'completed' | 'failed';
+    message: string;
+    progress?: { total: number; processed: number };
+    started_at?: string;
+    completed_at?: string;
+}> => {
+    const response = await apiClient.get(`/api/stock/calculate/status/${taskId}`);
+    return response.data;
+};
+
+/**
+ * Check if stock levels need recalculation
+ */
+export const needsRecalculation = async (): Promise<{
+    needs_recalculation: boolean;
+    reason: string;
+}> => {
+    const response = await apiClient.get('/api/stock/needs-recalculation');
+    return response.data;
 };
 
 /**

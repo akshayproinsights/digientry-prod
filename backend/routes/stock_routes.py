@@ -9,6 +9,9 @@ from pydantic import BaseModel
 import logging
 from datetime import datetime
 from rapidfuzz import fuzz
+import uuid
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib import colors
 from reportlab.lib.units import inch
@@ -22,6 +25,9 @@ from auth import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Thread pool for stock recalculation (non-blocking)
+stock_executor = ThreadPoolExecutor(max_workers=2)
 
 # ============================================================================
 # REORDER POINT CONFIGURATION - CHANGE HERE TO UPDATE DEFAULT
@@ -657,21 +663,193 @@ async def calculate_stock_levels(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    Recalculate all stock levels from existing inventory and sales data.
-    This is a comprehensive recalculation that processes all data.
+    Trigger stock recalculation in background (non-blocking).
+    Returns immediately with a task_id for status polling.
     """
     username = current_user.get("username")
+    task_id = str(uuid.uuid4())
+    
+    logger.info(f"========== STOCK RECALCULATION TRIGGERED ==========")
+    logger.info(f"User: {username}")
+    logger.info(f"Task ID: {task_id}")
+    
+    # Initialize task status in database
+    db = get_database_client()
+    initial_status = {
+        "task_id": task_id,
+        "username": username,
+        "status": "queued",
+        "message": "Stock recalculation queued",
+        "progress": {
+            "total": 0,
+            "processed": 0
+        },
+        "created_at": datetime.utcnow().isoformat()
+    }
     
     try:
-        recalculate_stock_for_user(username)
+        db.insert("recalculation_tasks", initial_status)
+        logger.info(f"Created recalculation task {task_id} in database")
+    except Exception as e:
+        logger.error(f"Failed to create recalculation task in DB: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    
+    # Submit to thread pool (non-blocking)
+    try:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(
+            stock_executor,
+            recalculate_stock_wrapper,
+            task_id,
+            username
+        )
+        logger.info(f"Submitted recalculation task {task_id} to thread pool")
+    except Exception as e:
+        logger.error(f"Failed to submit recalculation task: {e}")
+        try:
+            db.update("recalculation_tasks", 
+                     {"status": "failed", "message": f"Failed to start: {str(e)}"}, 
+                     {"task_id": task_id})
+        except:
+            pass
+        raise HTTPException(status_code=500, detail=f"Failed to start recalculation: {str(e)}")
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "message": "Stock recalculation started in background"
+    }
+
+
+@router.get("/calculate/status/{task_id}")
+async def get_recalculation_status(
+    task_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Get status of a stock recalculation task.
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        # Query task status from database
+        response = db.query("recalculation_tasks").eq("task_id", task_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        task = response.data[0]
+        
+        # Verify ownership
+        if task.get("username") != username:
+            raise HTTPException(status_code=403, detail="Access denied")
         
         return {
             "success": True,
-            "message": "Stock levels recalculated successfully"
+            "task_id": task.get("task_id"),
+            "status": task.get("status"),
+            "message": task.get("message"),
+            "progress": task.get("progress", {}),
+            "started_at": task.get("started_at"),
+            "completed_at": task.get("completed_at")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching recalculation status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/needs-recalculation")
+async def check_needs_recalculation(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Check if stock levels need recalculation.
+    Returns true if stock_levels table is empty or potentially stale.
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        # Check if stock_levels table has any records for this user
+        response = db.client.table("stock_levels")\
+            .select("part_number", count="exact")\
+            .eq("username", username)\
+            .limit(1)\
+            .execute()
+        
+        # If no stock levels exist, recalculation is needed
+        needs_recalc = not response.data or len(response.data) == 0
+        
+        return {
+            "success": True,
+            "needs_recalculation": needs_recalc,
+            "reason": "No stock levels found" if needs_recalc else "Stock levels exist"
         }
         
     except Exception as e:
-        logger.error(f"Error calculating stock levels: {e}")
+        logger.error(f"Error checking recalculation need: {e}")
+        # If error, assume recalculation is needed to be safe
+        return {
+            "success": True,
+            "needs_recalculation": True,
+            "reason": f"Error checking status: {str(e)}"
+        }
+
+
+def recalculate_stock_wrapper(task_id: str, username: str):
+    """
+    Wrapper function to run recalculate_stock_for_user in background thread.
+    Updates task status in database during execution.
+    """
+    db = get_database_client()
+    
+    def update_task_status(status_update: Dict[str, Any]):
+        """Helper to update task status in database"""
+        try:
+            status_update["updated_at"] = datetime.utcnow().isoformat()
+            db.update("recalculation_tasks", status_update, {"task_id": task_id})
+        except Exception as e:
+            logger.error(f"Failed to update recalculation task status: {e}")
+    
+    logger.info(f"========== RECALCULATION BACKGROUND TASK STARTED ==========")
+    logger.info(f"Task ID: {task_id}, Username: {username}")
+    
+    try:
+        # Update status to processing
+        update_task_status({
+            "status": "processing",
+            "message": "Recalculating stock levels...",
+            "started_at": datetime.utcnow().isoformat()
+        })
+        
+        # Run the actual recalculation (blocking operation, but in thread pool)
+        recalculate_stock_for_user(username)
+        
+        # Update status to completed
+        update_task_status({
+            "status": "completed",
+            "message": "Stock levels recalculated successfully",
+            "completed_at": datetime.utcnow().isoformat()
+        })
+        
+        logger.info(f"✅ Recalculation task {task_id} completed successfully")
+        
+    except Exception as e:
+        logger.error(f"❌ Recalculation task {task_id} failed: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        update_task_status({
+            "status": "failed",
+            "message": f"Recalculation failed: {str(e)}",
+            "completed_at": datetime.utcnow().isoformat()
+        })
+
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -679,10 +857,53 @@ def recalculate_stock_for_user(username: str):
     """
     Core logic to recalculate stock levels for a user.
     Can be called from other routes after invoice processing.
+    
+    THREAD-SAFE: Uses PostgreSQL advisory lock to prevent concurrent
+    recalculations for the same user, ensuring atomicity of the
+    delete-then-insert operation.
     """
     db = get_database_client()
     
-    logger.info(f"Starting stock recalculation for {username}")
+    # Generate unique lock ID from username (consistent hash)
+    # PostgreSQL advisory locks use bigint, so we need a 64-bit integer
+    import hashlib
+    lock_id = int(hashlib.sha256(username.encode()).hexdigest()[:16], 16) % (2**63 - 1)
+    
+    logger.info(f"Starting stock recalculation for {username} (lock_id={lock_id})")
+    
+    # Acquire PostgreSQL advisory lock (blocks if another recalculation is running for this user)
+    # This prevents race conditions during the delete-then-insert operation
+    try:
+        logger.info(f"Acquiring advisory lock for user {username}...")
+        lock_result = db.client.rpc('acquire_stock_lock', {'p_lock_id': lock_id}).execute()
+        logger.info(f"✓ Lock acquired for {username}")
+    except Exception as e:
+        logger.error(f"Failed to acquire advisory lock for {username}: {e}")
+        raise
+    
+    try:
+        # ALL THE RECALCULATION LOGIC RUNS INSIDE THE LOCK
+        _perform_stock_recalculation(username, db)
+    finally:
+        # ALWAYS release the lock, even if recalculation fails
+        try:
+            logger.info(f"Releasing advisory lock for {username}...")
+            db.client.rpc('release_stock_lock', {'p_lock_id': lock_id}).execute()
+            logger.info(f"✓ Lock released for {username}")
+        except Exception as e:
+            logger.error(f"Failed to release advisory lock for {username}: {e}")
+
+
+def _perform_stock_recalculation(username: str, db):
+    """
+    Internal helper that performs the actual stock recalculation.
+    This is separated so the lock logic is clear in the parent function.
+    
+    Args:
+        username: Username to recalculate stock for
+        db: Database client instance
+    """
+    logger.info(f"Performing stock recalculation for {username}")
     
     # 1. Get all vendor invoice items (IN transactions) - EXCLUDING items marked as deleted
     vendor_items = db.client.table("inventory_items")\
@@ -1020,10 +1241,15 @@ def recalculate_stock_for_user(username: str):
             logger.info(f"🔄 Preserved orphaned item: {part_num} (no transactions)")
     
     # 9. Clear existing stock levels and insert new ones
+    # NOTE: This delete-then-insert is now protected by advisory lock (see recalculate_stock_for_user)
     if stock_records:
+        logger.info(f"🔒 [LOCKED] Deleting existing stock_levels for {username}...")
         # Delete existing
-        db.client.table("stock_levels").delete().eq("username", username).execute()
+        delete_result = db.client.table("stock_levels").delete().eq("username", username).execute()
+        deleted_count = len(delete_result.data) if delete_result.data else 0
+        logger.info(f"🔒 [LOCKED] Deleted {deleted_count} old records")
         
+        logger.info(f"🔒 [LOCKED] Inserting {len(stock_records)} new stock records...")
         # Batch insert new records
         db.batch_upsert("stock_levels", stock_records, batch_size=500)
         

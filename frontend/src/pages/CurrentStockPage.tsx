@@ -9,6 +9,8 @@ import {
     updateStockLevel,
     updateStockAdjustment,
     calculateStockLevels,
+    getRecalculationStatus,
+    needsRecalculation,
     getStockHistory,
     updateStockTransaction,
     deleteStockTransaction,
@@ -215,6 +217,12 @@ const CurrentStockPage: React.FC = () => {
     const [showHistoryModal, setShowHistoryModal] = useState(false);
     const [selectedPartHistory, setSelectedPartHistory] = useState<{ partNumber: string; itemName: string } | null>(null);
     const [isCalculating, setIsCalculating] = useState(false);
+    const [recalcStatus, setRecalcStatus] = useState<{
+        task_id?: string;
+        status?: 'queued' | 'processing' | 'completed' | 'failed';
+        message?: string;
+    }>({});
+    const recalcIntervalRef = useRef<number | null>(null);
 
     // Edit mode state
     const [pendingSetupCount, setPendingSetupCount] = useState(0);
@@ -412,35 +420,89 @@ const CurrentStockPage: React.FC = () => {
         loadData();
     }, [loadData]);
 
-    // Auto-recalculate stock when page loads
-    // Note: We don't call loadData() here because the regular useEffect will handle it
-    // This prevents the sorted data from being overwritten with unsorted data
+    // Polling function to check recalculation status
+    const pollRecalculationStatus = useCallback(async (taskId: string) => {
+        try {
+            const status = await getRecalculationStatus(taskId);
+            setRecalcStatus(status);
+
+            if (status.status === 'completed' || status.status === 'failed') {
+                // Stop polling
+                if (recalcIntervalRef.current !== null) {
+                    clearInterval(recalcIntervalRef.current);
+                    recalcIntervalRef.current = null;
+                }
+
+                setIsCalculating(false);
+
+                // Reload data if completed successfully
+                if (status.status === 'completed') {
+                    await loadData();
+                }
+            }
+        } catch (error) {
+            console.error('Error polling recalculation status:', error);
+            // Stop polling on error
+            if (recalcIntervalRef.current !== null) {
+                clearInterval(recalcIntervalRef.current);
+                recalcIntervalRef.current = null;
+            }
+            setIsCalculating(false);
+        }
+    }, [loadData]);
+
+    // Trigger stock recalculation
+    const triggerRecalculation = useCallback(async () => {
+        try {
+            setIsCalculating(true);
+            const result = await calculateStockLevels();
+
+            setRecalcStatus({
+                task_id: result.task_id,
+                status: 'queued',
+                message: 'Stock recalculation queued...'
+            });
+
+            // Start polling for status
+            recalcIntervalRef.current = window.setInterval(() => {
+                pollRecalculationStatus(result.task_id);
+            }, 1000); // Poll every second
+
+        } catch (error) {
+            console.error('Error starting recalculation:', error);
+            setIsCalculating(false);
+        }
+    }, [pollRecalculationStatus]);
+
+    // Cleanup polling on unmount
+    useEffect(() => {
+        return () => {
+            if (recalcIntervalRef.current !== null) {
+                clearInterval(recalcIntervalRef.current);
+            }
+        };
+    }, []);
+
+    // Auto-trigger recalculation when page loads (only if needed)
     useEffect(() => {
         const autoRecalculate = async () => {
             try {
-                await calculateStockLevels();
-                // Don't call loadData() - let the regular effect handle it
-                // This ensures the sorting happens on the final data load
+                const checkResult = await needsRecalculation();
+                if (checkResult.needs_recalculation) {
+                    console.log('Auto-triggering stock recalculation:', checkResult.reason);
+                    await triggerRecalculation();
+                }
             } catch (error) {
-                console.error('Auto-recalculation failed:', error);
+                console.error('Auto-recalculation check failed:', error);
             }
         };
 
         autoRecalculate();
     }, []); // Run only once on mount
 
-    // Trigger stock calculation
+    // Trigger stock calculation manually (button click)
     const handleCalculateStock = async () => {
-        try {
-            setIsCalculating(true);
-            await calculateStockLevels();
-            await loadData();
-        } catch (error) {
-            console.error('Error calculating stock:', error);
-            alert('Failed to calculate stock levels');
-        } finally {
-            setIsCalculating(false);
-        }
+        await triggerRecalculation();
     };
 
     // === Traffic Light Edit Pattern with SmartEditableCell ===
@@ -936,6 +998,49 @@ const CurrentStockPage: React.FC = () => {
                         >
                             <X size={18} />
                         </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Stock Recalculation Status Banner */}
+            {isCalculating && recalcStatus.status && (
+                <div className={`border-l-4 p-4 rounded-md shadow-sm ${recalcStatus.status === 'processing' || recalcStatus.status === 'queued'
+                        ? 'bg-blue-50 border-blue-500'
+                        : recalcStatus.status === 'completed'
+                            ? 'bg-green-50 border-green-500'
+                            : 'bg-red-50 border-red-500'
+                    }`}>
+                    <div className="flex items-center">
+                        <RefreshCw
+                            className={`mr-3 ${recalcStatus.status === 'processing' || recalcStatus.status === 'queued'
+                                    ? 'text-blue-500 animate-spin'
+                                    : recalcStatus.status === 'completed'
+                                        ? 'text-green-500'
+                                        : 'text-red-500'
+                                }`}
+                            size={20}
+                        />
+                        <div className="flex-1">
+                            <p className={`font-medium ${recalcStatus.status === 'processing' || recalcStatus.status === 'queued'
+                                    ? 'text-blue-700'
+                                    : recalcStatus.status === 'completed'
+                                        ? 'text-green-700'
+                                        : 'text-red-700'
+                                }`}>
+                                {recalcStatus.status === 'queued' && 'Stock Recalculation Queued'}
+                                {recalcStatus.status === 'processing' && 'Recalculating Stock Levels...'}
+                                {recalcStatus.status === 'completed' && 'Stock Levels Updated'}
+                                {recalcStatus.status === 'failed' && 'Recalculation Failed'}
+                            </p>
+                            <p className={`text-sm ${recalcStatus.status === 'processing' || recalcStatus.status === 'queued'
+                                    ? 'text-blue-600'
+                                    : recalcStatus.status === 'completed'
+                                        ? 'text-green-600'
+                                        : 'text-red-600'
+                                }`}>
+                                {recalcStatus.message || 'Please wait...'}
+                            </p>
+                        </div>
                     </div>
                 </div>
             )}

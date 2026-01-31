@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: digientry-backend-local
+    ports:
+      - "8000:8080"
+    environment:
+      - PORT=8080
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
+      - R2_PUBLIC_BASE_URL=${R2_PUBLIC_BASE_URL}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - USERS_CONFIG_JSON_BASE64=${USERS_CONFIG_JSON_BASE64}
+      - GCP_SERVICE_ACCOUNT_JSON_BASE64=${GCP_SERVICE_ACCOUNT_JSON_BASE64}
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+      - /app/venv
+    command: uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+    env_file:
+      - backend/.env
+
+  frontend:
+    image: node:18-alpine
+    container_name: digientry-frontend-local
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    command: sh -c "npm install && npm run dev -- --host"
+    depends_on:
+      - backend
+
+#  # Optional: Local Postgres if we wanted to go full offline without Supabase Cloud
+#  db:
+#    image: postgres:15
+#    environment:
+#      POSTGRES_USER: postgres
+#      POSTGRES_PASSWORD: password
+#      POSTGRES_DB: local_db
+#    ports:
+#      - "5432:5432"

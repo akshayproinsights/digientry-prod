@@ -74,6 +74,11 @@ const InventoryUploadPage: React.FC = () => {
                         isComplete: true
                     });
 
+                    // User has now seen the completion - clear it after 2 seconds so green banner disappears
+                    setTimeout(() => {
+                        localStorage.removeItem('inventoryCompletionStatus');
+                    }, 2000);
+
                     // Stop polling if we found completion
                     if (interval) clearInterval(interval);
                     return true; // Signal handled
@@ -206,7 +211,7 @@ const InventoryUploadPage: React.FC = () => {
         };
     }, []);
 
-    // Browser warning when trying to close/refresh during upload
+    // Browser warning when trying to close/refresh during upload or processing
     useEffect(() => {
         const handleBeforeUnload = (e: BeforeUnloadEvent) => {
             if (isUploading) {
@@ -719,6 +724,42 @@ const InventoryUploadPage: React.FC = () => {
                             <div
                                 className="bg-white h-2 rounded-full transition-all"
                                 style={{ width: `${uploadProgress}%` }}
+                            />
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Processing Progress Banner - Blue during processing, Green when complete */}
+            {(isProcessing || (processingStatus?.status === 'completed' && localStorage.getItem('inventoryCompletionStatus'))) && (
+                <div className={`fixed top-0 left-0 right-0 ${isProcessing ? 'bg-blue-500' : 'bg-green-500'} text-white px-6 py-4 shadow-lg z-50`}>
+                    <div className="max-w-7xl mx-auto flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                            {isProcessing ? (
+                                <Loader2 className="animate-spin" size={24} />
+                            ) : (
+                                <CheckCircle size={24} />
+                            )}
+                            <div>
+                                <p className="font-bold">
+                                    {isProcessing ? 'Processing Purchase Invoices' : 'Processing Complete! ✓'}
+                                </p>
+                                <p className="text-sm">
+                                    {isProcessing
+                                        ? `${processingStatus?.progress?.processed || 0} of ${processingStatus?.progress?.total || 0} files processed`
+                                        : `${processingStatus?.progress?.processed || 0} purchase bill(s) successfully processed`
+                                    }
+                                </p>
+                            </div>
+                        </div>
+                        <div className="w-32 bg-blue-600/50 rounded-full h-2">
+                            <div
+                                className="bg-white h-2 rounded-full transition-all"
+                                style={{
+                                    width: isProcessing
+                                        ? `${Math.min(100, ((processingStatus?.progress?.processed || 0) / (processingStatus?.progress?.total || 1)) * 100)}%`
+                                        : '100%'
+                                }}
                             />
                         </div>
                     </div>
