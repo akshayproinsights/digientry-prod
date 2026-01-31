@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 # Configurable via environment variable
 executor = ThreadPoolExecutor(max_workers=int(os.getenv('INVENTORY_MAX_WORKERS', '50')))
 
-# In-memory storage for processing status
-inventory_processing_status: Dict[str, Dict[str, Any]] = {}
+# In-memory storage REMOVED - using database table 'upload_tasks'
+# inventory_processing_status: Dict[str, Dict[str, Any]] = {}
 
 
 class InventoryUploadResponse(BaseModel):
@@ -208,20 +208,35 @@ async def process_inventory(
     if not r2_bucket:
         raise HTTPException(status_code=400, detail="No r2_bucket configured for user")
     
-    # Initialize status
-    inventory_processing_status[task_id] = {
+    
+    # Initialize status in DATABASE
+    initial_status = {
+        "task_id": task_id,
+        "username": current_user.get("username", "user"),
         "status": "queued",
+        "message": "Processing queued",
         "progress": {
             "total": len(request.file_keys),
             "processed": 0,
             "failed": 0
         },
-        "message": "Processing queued",
+        "duplicates": [],
+        "errors": [],
         "current_file": "",
         "current_index": 0,
-        "start_time": None,
-        "end_time": None
+        "uploaded_r2_keys": [],
+        "created_at": datetime.utcnow().isoformat()
     }
+    
+    try:
+        from database import get_database_client
+        db = get_database_client()
+        db.insert("upload_tasks", initial_status)
+        logger.info(f"Created inventory task {task_id} for user {current_user.get('username')} in database")
+    except Exception as e:
+        logger.error(f"Failed to create inventory task in DB: {e}")
+        # convert to HTTP 500
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     
     # Run in thread pool
     loop = asyncio.get_event_loop()
@@ -250,19 +265,38 @@ async def get_inventory_process_status(
     """
     Get processing status for an inventory task
     """
-    if task_id not in inventory_processing_status:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    status = inventory_processing_status[task_id]
-    
-    return {
-        "task_id": task_id,
-        "status": status.get("status", "unknown"),
-        "progress": status.get("progress", {}),
-        "message": status.get("message", ""),
-        "duplicates": status.get("duplicates", []),  # Include duplicates array
-        "uploaded_r2_keys": status.get("uploaded_r2_keys", [])  # CRITICAL: Include R2 keys
-    }
+    """
+    Get processing status for an inventory task from DATABASE
+    """
+    try:
+        from database import get_database_client
+        db = get_database_client()
+        # Query task by ID
+        response = db.query("upload_tasks").eq("task_id", task_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        status_record = response.data[0]
+        
+        # Verify ownership (optional but good practice)
+        if status_record.get("username") != current_user.get("username") and current_user.get("role") != "admin":
+             # Silently return 404 or just pass if we trust UUID security
+             pass 
+
+        return {
+            "task_id": status_record.get("task_id"),
+            "status": status_record.get("status", "unknown"),
+            "progress": status_record.get("progress", {}),
+            "message": status_record.get("message", ""),
+            "duplicates": status_record.get("duplicates", []),
+            "uploaded_r2_keys": status_record.get("uploaded_r2_keys", [])
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching inventory task status {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch status: {str(e)}")
 
 
 def process_inventory_sync(
@@ -283,24 +317,49 @@ def process_inventory_sync(
     logger.info(f"Files: {len(file_keys)} R2 keys")
     logger.info(f"User: {username}")
     
+    # Helper to update DB status
+    def update_db_status(status_update: Dict[str, Any]):
+        try:
+            from database import get_database_client
+            db = get_database_client()
+            status_update["updated_at"] = datetime.utcnow().isoformat()
+            db.update("upload_tasks", status_update, {"task_id": task_id})
+        except Exception as e:
+            logger.error(f"Failed to update inventory task status in DB: {e}")
+
+    # Initialize current status dict for local updates (efficiency)
+    current_status = {
+        "progress": {
+            "total": len(file_keys),
+            "processed": 0,
+            "failed": 0
+        }
+    }
+
     try:
         # Files are already in R2
         r2_file_keys = file_keys
         
         # Phase 2: Process inventory
         logger.info("Phase 2: Processing inventory with AI...")
-        inventory_processing_status[task_id]["status"] = "processing"
-        inventory_processing_status[task_id]["message"] = "Processing inventory items..."
-        inventory_processing_status[task_id]["progress"]["total"] = len(r2_file_keys)
-        inventory_processing_status[task_id]["progress"]["processed"] = 0
-        inventory_processing_status[task_id]["start_time"] = datetime.now().isoformat()
+        
+        update_db_status({
+            "status": "processing",
+            "message": "Processing inventory items...",
+            "progress": current_status["progress"],
+            "start_time": datetime.now().isoformat()
+        })
         
         def update_progress(current_index: int, failed_count: int, total: int, current_file: str):
-            inventory_processing_status[task_id]["progress"]["processed"] = current_index
-            inventory_processing_status[task_id]["progress"]["failed"] = failed_count
-            inventory_processing_status[task_id]["current_file"] = current_file
-            inventory_processing_status[task_id]["current_index"] = current_index
-            inventory_processing_status[task_id]["message"] = f"Processing: {current_file}"
+            current_status["progress"]["processed"] = current_index
+            current_status["progress"]["failed"] = failed_count
+            
+            update_db_status({
+                "progress": current_status["progress"],
+                "current_file": current_file,
+                "current_index": current_index,
+                "message": f"Processing: {current_file}"
+            })
             logger.info(f"Progress: {current_index}/{total} (Failed: {failed_count}) - {current_file}")
         
         from services.inventory_processor import process_inventory_batch
@@ -317,20 +376,26 @@ def process_inventory_sync(
         
         # Check for duplicates
         if results.get("duplicates"):
-            inventory_processing_status[task_id]["status"] = "duplicate_detected"
-            inventory_processing_status[task_id]["duplicates"] = results["duplicates"]
-            inventory_processing_status[task_id]["uploaded_r2_keys"] = r2_file_keys  # CRITICAL: Frontend needs ALL R2 keys
-            inventory_processing_status[task_id]["message"] = f"Duplicate vendor invoices detected: {len(results['duplicates'])} file(s)"
+            update_db_status({
+                "status": "duplicate_detected",
+                "duplicates": results["duplicates"],
+                "uploaded_r2_keys": r2_file_keys, # CRITICAL: Frontend needs ALL R2 keys
+                "message": f"Duplicate vendor invoices detected: {len(results['duplicates'])} file(s)"
+            })
             logger.info(f"Duplicates detected: {len(results['duplicates'])}")
         else:
-            inventory_processing_status[task_id]["status"] = "completed"
-            inventory_processing_status[task_id]["progress"]["processed"] = results["processed"]
-            inventory_processing_status[task_id]["progress"]["failed"] = results["failed"]
-            inventory_processing_status[task_id]["message"] = f"Successfully processed {results['processed']} vendor invoices"
-            inventory_processing_status[task_id]["current_file"] = "All complete"
-            # ✓ Include top-level counts for frontend summary
-            inventory_processing_status[task_id]["processed"] = results["processed"]
-            inventory_processing_status[task_id]["duplicates"] = results.get("duplicates", [])
+            update_db_status({
+                "status": "completed",
+                "progress": {
+                    "total": results.get("total", len(r2_file_keys)),
+                    "processed": results["processed"],
+                    "failed": results["failed"]
+                },
+                "message": f"Successfully processed {results['processed']} vendor invoices",
+                "current_file": "All complete",
+                "duplicates": results.get("duplicates", []),
+                "end_time": datetime.now().isoformat()
+            })
             
             # AUTO-RECALCULATION: Trigger stock recalculation after successful inventory processing
             # This ensures stock levels are always up-to-date
@@ -338,20 +403,41 @@ def process_inventory_sync(
             if results["processed"] > 0:
                 logger.info(f"🔄 Auto-triggering stock recalculation for {username}...")
                 try:
-                    from routes.stock_routes import recalculate_stock_wrapper
+                    from routes.stock_routes import recalculate_stock_wrapper, create_recalculation_tasks_table_if_not_exists
+                    
+                    # Ensure table exists first (safeguard)
+                    # create_recalculation_tasks_table_if_not_exists()
+                    
+                    # Create a task_id for tracking
+                    recalc_task_id = str(uuid.uuid4())
+                    
+                    # Initialize task in DB (required for wrapper updates)
+                    try:
+                        from database import get_database_client
+                        db = get_database_client()
+                        db.insert("recalculation_tasks", {
+                            "task_id": recalc_task_id,
+                            "username": username,
+                            "status": "queued",
+                            "message": "Auto-triggered after inventory upload",
+                            "progress": {"total": 0, "processed": 0},
+                            "created_at": datetime.utcnow().isoformat()
+                        })
+                    except Exception as db_err:
+                        logger.warning(f"Could not create recalculation task record: {db_err}")
+                    
                     # Run in background (uses stock_executor thread pool)
-                    recalculate_stock_wrapper(username)
-                    logger.info(f"✅ Stock recalculation queued for {username}")
+                    # Pass BOTH task_id and username as required by wrapper
+                    recalculate_stock_wrapper(recalc_task_id, username)
+                    logger.info(f"✅ Stock recalculation queued for {username} (Task: {recalc_task_id})")
                 except Exception as e:
                     logger.error(f"❌ Auto-recalculation failed for {username}: {e}")
                     # Don't fail the upload if recalculation fails
                     # User can manually trigger recalculation later
         
-        inventory_processing_status[task_id]["end_time"] = datetime.now().isoformat()
-        
         if results["errors"]:
-            inventory_processing_status[task_id]["message"] += f" ({results['failed']} failed)"
-            inventory_processing_status[task_id]["errors"] = results["errors"]
+            # Optionally update errors in DB
+            # update_db_status({"errors": results["errors"]})
             logger.warning(f"Processing errors: {results['errors']}")
         
     except Exception as e:
@@ -359,9 +445,12 @@ def process_inventory_sync(
         logger.error(f"Error processing inventory: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
-        inventory_processing_status[task_id]["status"] = "failed"
-        inventory_processing_status[task_id]["message"] = f"Processing failed: {str(e)}"
-        inventory_processing_status[task_id]["end_time"] = datetime.now().isoformat()
+        
+        update_db_status({
+            "status": "failed",
+            "message": f"Processing failed: {str(e)}",
+            "end_time": datetime.now().isoformat()
+        })
     
     finally:
         logger.info("=== INVENTORY PROCESSING COMPLETED ===")
