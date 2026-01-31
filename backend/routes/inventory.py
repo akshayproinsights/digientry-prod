@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 import uuid
 import asyncio
+import os
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from fastapi.responses import StreamingResponse
