@@ -83,11 +83,9 @@ jobs:
           echo "Checking if Cloud Run service 'digientry-backend' exists..."
           gcloud run services describe digientry-backend --region asia-south1 --format "value(status.url)" || echo "::warning::Service 'digientry-backend' not found or not accessible!"
       
-      # FIX: Changed 'npm ci' to 'npm install' to prevent crashes. REMOVED bad VITE_API_URL override.
+      # FIX: Changed 'npm ci' to 'npm install' to prevent crashes.
+      # Uses .env.production for correct API URL
       - name: Install & Build React
-        env:
-           # Explicitly set the Asia backend URL for the build
-           VITE_API_URL: https://digientry-backend-112233610459.asia-south1.run.app
         run: npm install && npm run build
         working-directory: ./frontend
         

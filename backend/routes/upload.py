@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 import uuid
 import asyncio
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 from auth import get_current_user, get_current_user_r2_bucket, get_current_user_sheet_id
