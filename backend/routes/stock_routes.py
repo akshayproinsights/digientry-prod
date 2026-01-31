@@ -675,6 +675,7 @@ async def calculate_stock_levels(
     
     # Initialize task status in database
     db = get_database_client()
+    
     initial_status = {
         "task_id": task_id,
         "username": username,
