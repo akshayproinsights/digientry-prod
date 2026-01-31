@@ -538,9 +538,30 @@ def process_invoices_sync(
                 logger.info(f"🔄 Auto-triggering stock recalculation for {username}...")
                 try:
                     from routes.stock_routes import recalculate_stock_wrapper
+                    
+                    # Create a task_id for tracking
+                    recalc_task_id = str(uuid.uuid4())
+                    
+                    # Initialize task in DB (required for wrapper updates)
+                    try:
+                        db = get_database_client()
+                        db.insert("recalculation_tasks", {
+                            "task_id": recalc_task_id,
+                            "username": username,
+                            "status": "queued",
+                            "message": "Auto-triggered after upload",
+                            "progress": {"total": 0, "processed": 0},
+                            "created_at": datetime.utcnow().isoformat()
+                        })
+                    except Exception as db_err:
+                        logger.warning(f"Could not create recalculation task record: {db_err}")
+                        # Proceed anyway, wrapper might fail on update but calculation might run
+                    
                     # Run in background (uses stock_executor thread pool)
-                    recalculate_stock_wrapper(username)
-                    logger.info(f"✅ Stock recalculation queued for {username}")
+                    # Pass BOTH task_id and username as required by wrapper
+                    recalculate_stock_wrapper(recalc_task_id, username)
+                    
+                    logger.info(f"✅ Stock recalculation queued for {username} (Task: {recalc_task_id})")
                 except Exception as e:
                     logger.error(f"❌ Auto-recalculation failed for {username}: {e}")
                     # Don't fail the upload if recalculation fails

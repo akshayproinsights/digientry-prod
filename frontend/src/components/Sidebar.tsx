@@ -76,9 +76,10 @@ const Sidebar: React.FC = () => {
                 );
             }
             if (inventory.isUploading || inventory.processingCount > 0) {
+                const completed = (inventory.totalProcessing || 0) - inventory.processingCount;
                 return (
                     <span className="bg-blue-100 text-blue-600 text-xs font-semibold px-2 py-0.5 rounded-full ml-auto">
-                        Processing {inventory.processingCount}/{inventory.totalProcessing || '?'}
+                        Processing {completed}/{inventory.totalProcessing || '?'}
                     </span>
                 );
             }

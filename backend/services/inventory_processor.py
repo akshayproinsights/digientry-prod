@@ -571,10 +571,6 @@ def check_inventory_item_duplicate(
         # LEVEL 2: Check for duplicate by invoice number (different photo of same invoice)
         # First, we need to extract the invoice number from the image
         # We'll do a quick AI extraction just to get the invoice number
-        from services.processor import (
-            calculate_image_hash,
-            RateLimiter,
-        )
         
         # Process the invoice to get just the invoice number
         invoice_data = process_vendor_invoice(
