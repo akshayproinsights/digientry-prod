@@ -10,3 +10,11 @@ begin
   execute query;
 end;
 $$;
+
+-- Grant permissions to allow API access
+GRANT EXECUTE ON FUNCTION exec_sql(text) TO service_role;
+GRANT EXECUTE ON FUNCTION exec_sql(text) TO anon;
+GRANT EXECUTE ON FUNCTION exec_sql(text) TO authenticated;
+
+-- Force schema cache reload
+NOTIFY pgrst, 'reload schema';

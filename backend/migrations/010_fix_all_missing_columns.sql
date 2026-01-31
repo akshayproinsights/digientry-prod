@@ -22,5 +22,9 @@ ADD COLUMN IF NOT EXISTS invoice_number TEXT;
 ALTER TABLE inventory_items 
 ADD COLUMN IF NOT EXISTS amount_mismatch NUMERIC;
 
+-- batch (text) - used for batch processing tracking
+ALTER TABLE inventory_items 
+ADD COLUMN IF NOT EXISTS batch TEXT;
+
 -- Add comment to track migration
 COMMENT ON TABLE stock_levels IS 'Updated with unit_value column';
