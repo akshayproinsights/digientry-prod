@@ -652,7 +652,8 @@ def process_inventory_batch(
     duplicates = []  # Track duplicates for user decision
     
     # Use ThreadPoolExecutor for parallel processing
-    max_workers = 25
+    # Configurable via environment variable, defaults to 50 as per high-performance config
+    max_workers = int(os.getenv('INVENTORY_MAX_WORKERS', '50'))
     
     # PHASE 1: PRE-SCAN FOR DUPLICATES (If not forcing upload)
     # This allows us to return early if duplicates are found, improving UX

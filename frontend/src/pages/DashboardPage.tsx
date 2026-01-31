@@ -5,6 +5,8 @@ import { useGlobalStatus } from '../contexts/GlobalStatusContext';
 import {
     ChevronDown,
     X,
+    ShoppingCart,
+    Package,
     Calendar,
 } from 'lucide-react';
 
@@ -23,13 +25,13 @@ const DashboardPage: React.FC = () => {
     // State for filters
     const [dateRange, setDateRange] = useState<{ start: string; end: string }>(() => {
         const now = new Date();
-        const start = subDays(now, 90); // Last 90 days by default
+        const start = subDays(now, 7); // Last 7 days by default
         return {
             start: format(start, 'yyyy-MM-dd'),
             end: format(now, 'yyyy-MM-dd'),
         };
     });
-    const [selectedPreset, setSelectedPreset] = useState<string>('quarter');
+    const [selectedPreset, setSelectedPreset] = useState<string>('week');
     const [showCustomDatePicker, setShowCustomDatePicker] = useState(false);
     const [customStartDate, setCustomStartDate] = useState('');
     const [customEndDate, setCustomEndDate] = useState('');
@@ -177,46 +179,26 @@ const DashboardPage: React.FC = () => {
     useEffect(() => {
         setHeaderActions(
             <div className="flex items-center justify-end w-full gap-2">
-                {/* Date Range Buttons */}
-                <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-1">
-                    <button
-                        onClick={() => setDatePreset('week')}
-                        className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'week'
-                            ? 'bg-indigo-600 text-white'
-                            : 'text-gray-700 hover:bg-gray-100'
-                            }`}
-                    >
-                        This Week
-                    </button>
-                    <button
-                        onClick={() => setDatePreset('month')}
-                        className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'month'
-                            ? 'bg-indigo-600 text-white'
-                            : 'text-gray-700 hover:bg-gray-100'
-                            }`}
-                    >
-                        This Month
-                    </button>
-                    <button
-                        onClick={() => setDatePreset('all')}
-                        className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'all'
-                            ? 'bg-indigo-600 text-white'
-                            : 'text-gray-700 hover:bg-gray-100'
-                            }`}
-                    >
-                        ALL
-                    </button>
-                    <button
-                        onClick={() => setDatePreset('custom')}
-                        className={`px-3 py-1 rounded-md text-xs font-medium transition flex items-center gap-1 ${selectedPreset === 'custom'
-                            ? 'bg-indigo-600 text-white'
-                            : 'text-gray-700 hover:bg-gray-100'
-                            }`}
-                    >
-                        <Calendar size={14} />
-                        Custom
-                    </button>
-                </div>
+                {/* Upload Buttons */}
+                <button
+                    onClick={() => navigate('/sales/upload')}
+                    className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition shadow-sm"
+                >
+                    <ShoppingCart size={16} />
+                    <span className="font-medium">Upload Sales</span>
+                </button>
+
+                <button
+                    onClick={() => navigate('/inventory/upload')}
+                    className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition shadow-sm"
+                >
+                    <Package size={16} />
+                    <span className="font-medium">Upload Inventory</span>
+                </button>
+
+                {/* Divider */}
+                <div className="h-8 w-px bg-gray-300 mx-2"></div>
+
 
                 {/* Advanced Filters Toggle */}
                 <button
@@ -289,9 +271,7 @@ const DashboardPage: React.FC = () => {
         navigate('/inventory/stock?status=out_of_stock');
     };
 
-    // Format currency with k/L notation
-    const formatCurrency = (value: number) =>
-        `₹${value.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
 
 
 
@@ -481,6 +461,38 @@ const DashboardPage: React.FC = () => {
                         dateRangeLabel={getDateRangeLabel()}
                         startDate={dateRange.start}
                         endDate={dateRange.end}
+                        filterControls={
+                            <div className="flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-lg p-1">
+                                <button
+                                    onClick={() => setDatePreset('week')}
+                                    className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'week'
+                                        ? 'bg-white text-indigo-600 shadow-sm border border-gray-200'
+                                        : 'text-gray-600 hover:bg-gray-200'
+                                        }`}
+                                >
+                                    This Week
+                                </button>
+                                <button
+                                    onClick={() => setDatePreset('all')}
+                                    className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'all'
+                                        ? 'bg-white text-indigo-600 shadow-sm border border-gray-200'
+                                        : 'text-gray-600 hover:bg-gray-200'
+                                        }`}
+                                >
+                                    ALL
+                                </button>
+                                <button
+                                    onClick={() => setDatePreset('custom')}
+                                    className={`px-3 py-1 rounded-md text-xs font-medium transition flex items-center gap-1 ${selectedPreset === 'custom'
+                                        ? 'bg-white text-indigo-600 shadow-sm border border-gray-200'
+                                        : 'text-gray-600 hover:bg-gray-200'
+                                        }`}
+                                >
+                                    <Calendar size={12} />
+                                    Custom
+                                </button>
+                            </div>
+                        }
                     />
                 </div>
             </div>

@@ -19,6 +19,7 @@ interface SalesTrendChartProps {
     dateRangeLabel?: string;
     startDate?: string;
     endDate?: string;
+    filterControls?: React.ReactNode;
 }
 
 const SalesTrendChart: React.FC<SalesTrendChartProps> = ({
@@ -27,6 +28,7 @@ const SalesTrendChart: React.FC<SalesTrendChartProps> = ({
     dateRangeLabel = 'This Period',
     startDate,
     endDate,
+    filterControls,
 }) => {
     // Process data to ensure continuous date range
     const processedData = useMemo(() => {
@@ -121,11 +123,16 @@ const SalesTrendChart: React.FC<SalesTrendChartProps> = ({
     return (
         <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 h-[500px] flex flex-col justify-center">
             {/* Dynamic Header */}
-            <div className="mb-4">
+            <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-gray-900">
                     Revenue Overview
                     <span className="text-sm text-gray-500 font-normal ml-2">({dateRangeLabel})</span>
                 </h3>
+                {filterControls && (
+                    <div className="flex items-center">
+                        {filterControls}
+                    </div>
+                )}
             </div>
 
             {isLoading ? (
