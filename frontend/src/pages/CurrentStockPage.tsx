@@ -302,6 +302,7 @@ const CurrentStockPage: React.FC = () => {
                     id="mapping-sheet-upload"
                     type="file"
                     accept=".pdf,image/*"
+                    multiple
                     onChange={handleUploadMappingSheet}
                     disabled={isUploading}
                     className="hidden"
@@ -483,15 +484,13 @@ const CurrentStockPage: React.FC = () => {
         };
     }, []);
 
-    // Auto-trigger recalculation when page loads (only if needed)
+    // Auto-trigger recalculation when page loads - ALWAYS FORCE RECALC per user request
     useEffect(() => {
         const autoRecalculate = async () => {
             try {
-                const checkResult = await needsRecalculation();
-                if (checkResult.needs_recalculation) {
-                    console.log('Auto-triggering stock recalculation:', checkResult.reason);
-                    await triggerRecalculation();
-                }
+                // Always trigger recalculation on mount as per user request
+                console.log('Auto-triggering stock recalculation on page load');
+                await triggerRecalculation();
             } catch (error) {
                 console.error('Auto-recalculation check failed:', error);
             }
@@ -519,6 +518,9 @@ const CurrentStockPage: React.FC = () => {
             const updates = { [field]: value };
             // @ts-ignore
             await updateStockLevel(id, updates);
+
+            // Trigger recalculation immediately after save
+            triggerRecalculation();
         } catch (error) {
             console.error('Error updating stock level:', error);
             throw error; // Let SmartEditableCell handle error state
@@ -543,6 +545,9 @@ const CurrentStockPage: React.FC = () => {
 
         try {
             await updateStockAdjustment(item.part_number, value);
+
+            // Trigger recalculation immediately after save
+            triggerRecalculation();
         } catch (error) {
             console.error('Error updating physical stock:', error);
             // Revert validation is up to the cell (it turns red)
@@ -682,6 +687,8 @@ const CurrentStockPage: React.FC = () => {
                     loadData();
                     // Release the lock AFTER data loads
                     setIsMappingInProgress(false);
+                    // Trigger recalculation after new mapping
+                    triggerRecalculation();
                 }, 500);
             } else {
                 setIsMappingInProgress(false);
@@ -710,6 +717,9 @@ const CurrentStockPage: React.FC = () => {
                 delete updated[item.id];
                 return updated;
             });
+
+            // Trigger recalculation after clearing mapping
+            triggerRecalculation();
 
             // DON'T reload - keep item in place so user can immediately add new mapping
             // setTimeout(() => loadData(), 300);
@@ -749,6 +759,9 @@ const CurrentStockPage: React.FC = () => {
                     setFlashGreen(prev => ({ ...prev, [item.id]: false }));
                 }, 2000);
 
+                // Trigger recalculation after auto-save
+                triggerRecalculation();
+
             } catch (error) {
                 console.error('Error auto-saving customer item:', error);
                 // Silently fail - don't bother user with error messages
@@ -768,12 +781,20 @@ const CurrentStockPage: React.FC = () => {
 
     // Upload mapping sheet handler
     const handleUploadMappingSheet = async (event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
+        const files = event.target.files;
+        if (!files || files.length === 0) return;
 
-        // Validate file type
-        if (!file.type.includes('pdf') && !file.type.includes('image')) {
-            alert('Please upload a PDF or image file');
+        // Validate file types
+        const validFiles: File[] = [];
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            if (file.type.includes('pdf') || file.type.includes('image')) {
+                validFiles.push(file);
+            }
+        }
+
+        if (validFiles.length === 0) {
+            alert('Please upload PDF or image files.');
             return;
         }
 
@@ -784,44 +805,43 @@ const CurrentStockPage: React.FC = () => {
         try {
             // Simulate progress
             const progressInterval = setInterval(() => {
-                setUploadProgress((prev) => Math.min(prev + 10, 90));
-            }, 200);
+                setUploadProgress((prev) => Math.min(prev + 5, 95));
+            }, 500);
 
-            const response = await mappingSheetAPI.upload(file);
+            const formData = new FormData();
+            validFiles.forEach((file) => {
+                formData.append('files', file);
+            });
+
+            // Use the updated mapping sheet upload endpoint
+            // Note: Ensure your API service method (mappingSheetAPI.upload) handles raw FormData correctly
+            // or use apiClient directly if the service wrapper assumes single file
+            const response = await apiClient.post('/api/stock/mapping-sheets/upload', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+            });
 
             clearInterval(progressInterval);
             setUploadProgress(100);
 
-            // Show success message
-            alert(
-                `✅ ${response.message}\n\n` +
-                `Extracted ${response.extracted_rows} rows\n` +
-                `Status: ${response.status}\n\n` +
-                `Refreshing stock data...`
-            );
-
-            // Wait for backend recalculation to complete before refreshing
-            // The backend triggers stock recalculation which may take a moment
-            await new Promise(resolve => setTimeout(resolve, 1000));
-
-            // Force a complete refresh of stock data
-            await loadData();
-
-            // Also refresh the summary to show updated counts
-            const summaryData = await getStockSummary();
-            setSummary(summaryData);
-
+            if (response.data && response.data.message) {
+                // Success
+                setTimeout(() => {
+                    setIsUploading(false);
+                    alert(response.data.message);
+                    loadData(); // Reload stock data
+                }, 500);
+            }
         } catch (error: any) {
-            console.error('Upload error:', error);
-            const msg = `Failed to upload mapping sheet: ${error.response?.data?.detail || error.message}`;
-            setErrorMessage(msg);
-        } finally {
+            console.error('Error uploading mapping sheets:', error);
             setIsUploading(false);
-            setUploadProgress(0);
-            // Reset file input
-            event.target.value = '';
+            setErrorMessage(error.response?.data?.detail || 'Failed to upload mapping sheets');
+            alert(`Upload failed: ${error.response?.data?.detail || 'Unknown error'}`);
         }
     };
+
+
 
     // Handle Export PDF (Inventory Count Sheet)
     const handleExportPDF = async () => {

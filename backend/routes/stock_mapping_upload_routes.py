@@ -35,296 +35,239 @@ def calculate_file_hash(content: bytes) -> str:
 
 @router.post("/upload", response_model=MappingSheetUploadResponse)
 async def upload_mapping_sheet(
-    file: UploadFile = File(...),
+    files: List[UploadFile] = File(...),
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Upload vendor mapping sheet PDF/Image
+    Upload MULTIPLE vendor mapping sheet PDFs/Images
     - Uploads to R2: {username}/mappings/
-    - Triggers Gemini extraction
+    - Triggers Gemini extraction for each
     - Directly updates stock_levels table with extracted data
     """
     username = current_user.get("username")
     
+    total_files = len(files)
+    processed_count = 0
+    total_stock_updates = 0
+    total_mappings_created = 0
+    total_mappings_updated = 0
+    total_rows_extracted = 0
+    
     try:
-        # 1. Read file content
-        content = await file.read()
-        file_hash = calculate_file_hash(content)
-        
-        # Note: No duplicate check needed - we're doing UPDATE-ONLY
-        # Re-uploading same file will just refresh the data
         db = get_database_client()
-        
-        # Continue with processing (will create fresh records)
-        
-        # 3. Upload to R2 using dynamic path
         storage = get_storage_client()
         user_config = load_user_config(username)
         bucket = user_config.get("r2_bucket")
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        extension = file.filename.split(".")[-1] if "." in file.filename else "pdf"
-        filename = f"{timestamp}_{file_hash[:8]}.{extension}"
-        
         mappings_folder = get_mappings_folder(username)
-        key = f"{mappings_folder}{filename}"
         
-        success = storage.upload_file(
-            file_data=content,
-            bucket=bucket,
-            key=key,
-            content_type=file.content_type
-        )
-        
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to upload to storage")
-        
-        image_url = storage.get_public_url(bucket, key)
-        
-        # 4. Extract data using Gemini
-        logger.info(f"Starting Gemini extraction for {filename}")
-        
-        # Load user config for Gemini prompt
-        user_config = load_user_config(username)
+        # Load Gemini config once
         vendor_mapping_config = user_config.get("vendor_mapping_gemini", {})
         system_instruction = vendor_mapping_config.get("system_instruction")
         
         if not system_instruction:
-            raise HTTPException(
-                status_code=500,
-                detail="vendor_mapping_gemini prompt not configured"
-            )
-        
-        # Configure Gemini
+            raise HTTPException(status_code=500, detail="vendor_mapping_gemini prompt not configured")
+            
         gemini_api_key = get_google_api_key()
-        
         if not gemini_api_key:
             raise HTTPException(status_code=500, detail="Gemini API key not configured")
-        
+            
         client = genai.Client(api_key=gemini_api_key)
         
-        # Generate extraction using new API
-        response = client.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=[
-                types.Part.from_bytes(data=content, mime_type=file.content_type or "image/png"),
-                system_instruction
-            ],
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                response_mime_type="application/json"
+        last_image_url = ""
+
+        for file in files:
+            logger.info(f"Processing file {processed_count + 1}/{total_files}: {file.filename}")
+            
+            # 1. Read file content
+            content = await file.read()
+            file_hash = calculate_file_hash(content)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            extension = file.filename.split(".")[-1] if "." in file.filename else "pdf"
+            filename = f"{timestamp}_{file_hash[:8]}.{extension}"
+            key = f"{mappings_folder}{filename}"
+            
+            # 2. Upload to R2
+            success = storage.upload_file(
+                file_data=content,
+                bucket=bucket,
+                key=key,
+                content_type=file.content_type
             )
-        )
-        
-        # Parse JSON response
-        response_text = response.text.strip()
-        if response_text.startswith("```json"):
-            response_text = response_text[7:]
-        if response_text.endswith("```"):
-            response_text = response_text[:-3]
-        response_text = response_text.strip()
-        
-        extracted_data = json.loads(response_text)
-        logger.info(f"Extracted {len(extracted_data.get('rows', []))} rows")
-        
-        # 5. Process extracted data and create mappings
-        rows_data = extracted_data.get("rows", [])
-        updated_stock_count = 0
-        created_mapping_count = 0
-        updated_mapping_count = 0
-        skipped_count = 0
-        
-        for row in rows_data:
-            row_number = row.get("row_number")
-            part_number = row.get("part_number")
-            vendor_description = row.get("vendor_description")
-            customer_item = row.get("customer_item")
-            priority = row.get("priority")
-            stock = row.get("stock")
-            reorder = row.get("reorder")
             
-            # DEBUG: Log extracted values
-            logger.info(f"🔍 Processing row: part={part_number}, customer_item={customer_item}, priority={priority}, stock={stock}, reorder={reorder}")
+            if success:
+                last_image_url = storage.get_public_url(bucket, key)
             
-            if not part_number:
-                logger.warning(f"Skipping row without part_number: {row}")
-                skipped_count += 1
-                continue
+            # 3. Extract data using Gemini
+            response = client.models.generate_content(
+                model="gemini-3-flash-preview",
+                contents=[
+                    types.Part.from_bytes(data=content, mime_type=file.content_type or "image/png"),
+                    system_instruction
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    response_mime_type="application/json"
+                )
+            )
             
-            # Check if stock_levels record exists (just to verify validity of part number)
-            existing_stock = db.client.table("stock_levels")\
-                .select("id, internal_item_name")\
-                .eq("username", username)\
-                .eq("part_number", part_number)\
-                .execute()
+            # Parse JSON
+            response_text = response.text.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
             
-            if existing_stock.data:
-                # 1. Update VENDOR MAPPING ENTRIES (Primary storage for Priority/Reorder)
-                internal_item_name = existing_stock.data[0].get("internal_item_name", vendor_description)
+            extracted_data = json.loads(response_text)
+            rows_data = extracted_data.get("rows", [])
+            total_rows_extracted += len(rows_data)
+            
+            # 4. Process extracted rows
+            for index, row in enumerate(rows_data):
+                row_number = row.get("row_number")
+                if row_number is None:
+                    row_number = index + 1
+                    
+                part_number = row.get("part_number")
+                vendor_description = row.get("vendor_description")
+                customer_item = row.get("customer_item")
+                priority = row.get("priority")
+                stock = row.get("stock")
+                reorder = row.get("reorder")
                 
-                # Check if mapping already exists
-                existing_mapping = db.client.table("vendor_mapping_entries")\
-                    .select("id")\
+                if not part_number:
+                    continue
+                
+                # Check for existing stock
+                existing_stock = db.client.table("stock_levels")\
+                    .select("id, internal_item_name")\
                     .eq("username", username)\
                     .eq("part_number", part_number)\
                     .execute()
                 
-                mapping_upsert_data = {
-                    "username": username,
-                    "part_number": part_number,
-                    "vendor_description": internal_item_name,
-                    "status": "Added",
-                    "updated_at": datetime.now().isoformat()
-                }
-                
-                # Add fields if they are present in extraction
-                if customer_item:
-                    mapping_upsert_data["customer_item_name"] = customer_item
-                if priority:
-                    mapping_upsert_data["priority"] = priority
-                if reorder is not None:
-                    mapping_upsert_data["reorder_point"] = reorder
-                
-                if existing_mapping.data:
-                    # UPDATE existing mapping
-                    db.client.table("vendor_mapping_entries")\
-                        .update(mapping_upsert_data)\
-                        .eq("id", existing_mapping.data[0]["id"])\
-                        .execute()
-                    updated_mapping_count += 1
-                    logger.info(f"📝 Updated mapping/priority/reorder for {part_number}")
-                else:
-                    # CREATE new mapping
-                    mapping_upsert_data["row_number"] = row_number
-                    mapping_upsert_data["created_at"] = datetime.now().isoformat()
-                    # Ensure customer_item matches logic if missing (maybe just internal name?)
-                    # If customer_item is null, we still create the entry to store priority/reorder
-                    if not customer_item:
-                         mapping_upsert_data["customer_item_name"] = "" 
+                if existing_stock.data:
+                    # Update Vendor Mapping Entry
+                    internal_item_name = existing_stock.data[0].get("internal_item_name", vendor_description)
                     
-                    db.client.table("vendor_mapping_entries")\
-                        .insert(mapping_upsert_data)\
-                        .execute()
-                    created_mapping_count += 1
-                    logger.info(f"✨ Created mapping (+priority/reorder) for {part_number}")
-
-                # 2. UPDATE stock_levels TEMPORARILY (Old Stock only)
-                # Priority and Reorder will be sync'd during recalculation from mapping table
-                # But we update old_stock directly here as it lives in stock_levels (or could be moved?)
-                # User request only said "Priority and Reorder Point... into vendor_mapping_entries"
-                # So "Old Stock" (physical count) likely stays in stock_levels (conceptually it's a transactional snapshot)
-                
-                if stock is not None: 
-                    stock_update_data = {
-                        "old_stock": stock,
-                        "image_hash": file_hash,
-                        "updated_at": datetime.now().isoformat()
-                    }
-                    
-                    db.client.table("stock_levels")\
-                        .update(stock_update_data)\
-                        .eq("username", username)\
-                        .eq("part_number", part_number)\
-                        .execute()
-                    updated_stock_count += 1
-                    logger.info(f"✏️ Updated stock count for {part_number} -> {stock}")
-
-            else:
-                # If not found in stock_levels, check if it exists in inventory_items (perhaps deleted/excluded)
-                # This allows "Restoring" a deleted item by uploading the mapping sheet
-                inventory_check = db.client.table("inventory_items")\
-                    .select("id")\
-                    .eq("username", username)\
-                    .eq("part_number", part_number)\
-                    .limit(1)\
-                    .execute()
-                
-                if inventory_check.data:
-                    # Item exists in inventory history! It might be excluded.
-                    # 1. Un-exclude it (Restore)
-                    db.client.table("inventory_items")\
-                        .update({"excluded_from_stock": False})\
-                        .eq("username", username)\
-                        .eq("part_number", part_number)\
-                        .execute()
-                    logger.info(f"♻️ Restored/Un-excluded inventory items for {part_number}")
-                    
-                    # 2. Create Mapping Entry (so it maps correctly in recalculation)
-                    mapping_upsert_data = {
-                        "username": username,
-                        "part_number": part_number,
-                        "vendor_description": vendor_description or part_number, # Fallback
-                        "status": "Restored", # Distinguish from "Added"
-                        "updated_at": datetime.now().isoformat(),
-                        "created_at": datetime.now().isoformat()
-                    }
-                     # Add fields if present
-                    if customer_item:
-                        mapping_upsert_data["customer_item_name"] = customer_item
-                    else:
-                        mapping_upsert_data["customer_item_name"] = "" 
-                        
-                    if priority:
-                        mapping_upsert_data["priority"] = priority
-                    if reorder is not None:
-                        mapping_upsert_data["reorder_point"] = reorder
-
-                    # Check for existing mapping (unlikely if stock_levels was gone, but safe to check)
                     existing_mapping = db.client.table("vendor_mapping_entries")\
                         .select("id")\
                         .eq("username", username)\
                         .eq("part_number", part_number)\
                         .execute()
-                        
+                    
+                    mapping_upsert_data = {
+                        "username": username,
+                        "part_number": part_number,
+                        "vendor_description": internal_item_name,
+                        "status": "Added",
+                        "updated_at": datetime.now().isoformat()
+                    }
+                    
+                    if customer_item: mapping_upsert_data["customer_item_name"] = customer_item
+                    if priority: mapping_upsert_data["priority"] = priority
+                    if reorder is not None: mapping_upsert_data["reorder_point"] = reorder
+                    
                     if existing_mapping.data:
                         db.client.table("vendor_mapping_entries")\
                             .update(mapping_upsert_data)\
                             .eq("id", existing_mapping.data[0]["id"])\
                             .execute()
+                        total_mappings_updated += 1
                     else:
+                        mapping_upsert_data["row_number"] = row_number
+                        mapping_upsert_data["created_at"] = datetime.now().isoformat()
+                        if not customer_item: mapping_upsert_data["customer_item_name"] = ""
+                        
                         db.client.table("vendor_mapping_entries")\
                             .insert(mapping_upsert_data)\
                             .execute()
-                            
-                    updated_stock_count += 1 # Effectively updated stock by restoring it
-                    logger.info(f"✨ Restored mapping + un-excluded inventory for {part_number}")
-
+                        total_mappings_created += 1
+                        
+                    # Update Stock Count (Old Stock)
+                    if stock is not None:
+                        stock_update_data = {
+                            "old_stock": stock,
+                            "image_hash": file_hash,
+                            "updated_at": datetime.now().isoformat()
+                        }
+                        db.client.table("stock_levels")\
+                            .update(stock_update_data)\
+                            .eq("username", username)\
+                            .eq("part_number", part_number)\
+                            .execute()
+                        total_stock_updates += 1
+                        
                 else:
-                    # SKIP - part number truly not found anywhere
-                    skipped_count += 1
-                    logger.warning(f"⚠️ Skipped part {part_number}: not found in stock_levels or inventory_items")
-        
-        
-        total_mappings = created_mapping_count + updated_mapping_count
-        logger.info(f"✅ Stock Updates: {updated_stock_count}, Mappings Created: {created_mapping_count}, Mappings Updated: {updated_mapping_count}, Skipped: {skipped_count}")
-        
-        # 6. Trigger stock recalculation to update all derived fields
-        # This will populate customer_items from vendor_mapping_entries
-        logger.info(f"🔄 Triggering stock recalculation to apply new values...")
+                    # Restore deleted items if found in inventory
+                    inventory_check = db.client.table("inventory_items")\
+                        .select("id")\
+                        .eq("username", username)\
+                        .eq("part_number", part_number)\
+                        .limit(1)\
+                        .execute()
+                        
+                    if inventory_check.data:
+                        # Restore
+                        db.client.table("inventory_items")\
+                            .update({"excluded_from_stock": False})\
+                            .eq("username", username)\
+                            .eq("part_number", part_number)\
+                            .execute()
+                        
+                        # Create/Update Mapping
+                        mapping_upsert_data = {
+                            "username": username,
+                            "part_number": part_number,
+                            "vendor_description": vendor_description or part_number,
+                            "status": "Restored",
+                            "updated_at": datetime.now().isoformat(),
+                            "created_at": datetime.now().isoformat()
+                        }
+                        
+                        if customer_item: mapping_upsert_data["customer_item_name"] = customer_item
+                        else: mapping_upsert_data["customer_item_name"] = ""
+                        
+                        if priority: mapping_upsert_data["priority"] = priority
+                        if reorder is not None: mapping_upsert_data["reorder_point"] = reorder
+                        
+                        existing_mapping = db.client.table("vendor_mapping_entries")\
+                            .select("id")\
+                            .eq("username", username)\
+                            .eq("part_number", part_number)\
+                            .execute()
+                            
+                        if existing_mapping.data:
+                            db.client.table("vendor_mapping_entries")\
+                                .update(mapping_upsert_data)\
+                                .eq("id", existing_mapping.data[0]["id"])\
+                                .execute()
+                        else:
+                            db.client.table("vendor_mapping_entries")\
+                                .insert(mapping_upsert_data)\
+                                .execute()
+                                
+                        total_stock_updates += 1 # Count restoration as update
+            
+            processed_count += 1
+
+        # Final Recalculation
+        logger.info(f"🔄 Triggering final stock recalculation...")
         try:
             recalculate_stock_for_user(username)
-            logger.info(f"✅ Stock recalculation completed successfully")
-        except Exception as recalc_error:
-            logger.error(f"⚠️ Stock recalculation failed: {recalc_error}")
-            # Don't fail the upload, just log the error
-        
-        skipped_note = f", Skipped: {skipped_count}" if skipped_count > 0 else ""
-        mapping_note = f" | Mappings: {total_mappings} ({created_mapping_count} new, {updated_mapping_count} updated)" if total_mappings > 0 else ""
-        
+        except Exception as e:
+            logger.error(f"Stock recalculation failed: {e}")
+
         return MappingSheetUploadResponse(
             sheet_id="",
-            image_url=image_url,
+            image_url=last_image_url, # user can see at least one
             status="completed",
-            message=f"Successfully processed {len(rows_data)} rows (Stock: {updated_stock_count}{skipped_note}){mapping_note}. Recalculated.",
-            extracted_rows=len(rows_data)
+            message=f"Processed {total_files} files. Updated {total_stock_updates} stocks. Mappings: {total_mappings_created} new, {total_mappings_updated} updated.",
+            extracted_rows=total_rows_extracted
         )
     
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Gemini response: {e}")
-        raise HTTPException(status_code=500, detail="Failed to parse extraction results")
-    
     except Exception as e:
-        logger.error(f"Error uploading mapping sheet: {e}")
+        logger.error(f"Error uploading mapping sheets: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

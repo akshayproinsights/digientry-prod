@@ -13,6 +13,7 @@ interface InventoryItem {
     stock_value: number;
     priority?: string;
     unit_value?: number; // Last buy price
+    sort_stock?: number; // For keeping sort order stable during edits
 }
 
 interface InventoryCommandCenterProps {
@@ -28,6 +29,8 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
     const queryClient = useQueryClient();
     const [activeTab, setActiveTab] = useState<PriorityTab>('All Items');
     const [searchQuery, setSearchQuery] = useState('');
+    // Local state to freeze sort order on first edit
+    const [frozenStocks, setFrozenStocks] = useState<Record<string, number>>({});
 
     // Map display tab names to API priority values
     const tabToPriority = (tab: PriorityTab): PriorityValue => {
@@ -65,6 +68,13 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
 
     // Handle stock updates with optimistic cache updates
     const handleStockUpdate = async (partNumber: string, newStock: number) => {
+        // Freeze sort order on the first edit of this session
+        setFrozenStocks(prev => {
+            if (prev[partNumber] !== undefined) return prev;
+            const currentItem = rawItems.find(i => i.part_number === partNumber);
+            return currentItem ? { ...prev, [partNumber]: currentItem.current_stock } : prev;
+        });
+
         // Optimistically update caches
         const updateItemInList = (items: InventoryItem[]) => {
             return items.map(item => {
@@ -119,6 +129,7 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
                 stock_value: item.current_stock * 100, // Approximate if value missing
                 priority: item.priority,
                 unit_value: item.unit_value, // Price data if available
+                sort_stock: frozenStocks[item.part_number] ?? item.current_stock,
             }));
         }
 
@@ -130,8 +141,9 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
             stock_value: item.current_stock * 100,
             priority: item.priority,
             unit_value: item.unit_value, // Price data if available
+            sort_stock: frozenStocks[item.part_number] ?? item.current_stock,
         })) || [];
-    }, [searchQuery, searchData, inventoryData]);
+    }, [searchQuery, searchData, inventoryData, frozenStocks]);
 
     // 4-Level Status Logic - COMPACT BADGES for data density
     const getStockStatus = (item: InventoryItem): { label: string; color: string } => {
@@ -186,17 +198,20 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
     // Smart Sorting: Negative stock → Zero stock → Low stock → Others
     const criticalItems = useMemo(() => {
         return [...rawItems].sort((a, b) => {
+            const stockA = a.sort_stock ?? a.current_stock;
+            const stockB = b.sort_stock ?? b.current_stock;
+
             // Priority 1: Negative stock items first
-            if (a.current_stock < 0 && b.current_stock >= 0) return -1;
-            if (b.current_stock < 0 && a.current_stock >= 0) return 1;
+            if (stockA < 0 && stockB >= 0) return -1;
+            if (stockB < 0 && stockA >= 0) return 1;
 
             // Priority 2: Zero stock items second
-            if (a.current_stock === 0 && b.current_stock > 0) return -1;
-            if (b.current_stock === 0 && a.current_stock > 0) return 1;
+            if (stockA === 0 && stockB > 0) return -1;
+            if (stockB === 0 && stockA > 0) return 1;
 
             // Priority 3: Low stock items third
-            const aIsLow = a.current_stock > 0 && a.current_stock <= a.reorder_point;
-            const bIsLow = b.current_stock > 0 && b.current_stock <= b.reorder_point;
+            const aIsLow = stockA > 0 && stockA <= a.reorder_point;
+            const bIsLow = stockB > 0 && stockB <= b.reorder_point;
 
             if (aIsLow && !bIsLow) return -1;
             if (bIsLow && !aIsLow) return 1;
