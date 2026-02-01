@@ -84,12 +84,20 @@ class InventoryByPriority(BaseModel):
     healthy_percentage: float
 
 
+
 class DashboardKPIs(BaseModel):
     """All dashboard KPIs"""
     total_revenue: KPICard
     avg_job_value: KPICard
     inventory_alerts: KPICard
     pending_actions: KPICard
+
+
+class UpdateStockRequest(BaseModel):
+    """Request model for updating stock"""
+    part_number: str
+    new_stock: int
+
 
 
 
@@ -1050,3 +1058,73 @@ async def get_part_suggestions(
     except Exception as e:
         logger.error(f"Error getting part suggestions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/update-stock")
+async def update_stock(
+    request: UpdateStockRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Update stock value for a specific item.
+    Returns status_corrected: true if stock went from negative to positive.
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        # Load user config
+        config = get_user_config(username)
+        if not config or "dashboard_visuals" not in config:
+            raise HTTPException(status_code=400, detail="Dashboard configuration not found")
+        
+        stock_config = config["dashboard_visuals"].get("stock_metrics", {})
+        stock_col = stock_config.get("stock_column", "current_stock")
+        data_source = stock_config.get("data_source", "stock_levels")
+        part_col = stock_config.get("part_number_column", "part_number")
+        
+        # 1. Fetch current stock to check for negative status
+        current_data = db.client.table(data_source)\
+            .select(f"{stock_col}")\
+            .eq("username", username)\
+            .eq(part_col, request.part_number)\
+            .single()\
+            .execute()
+            
+        old_stock_val = 0
+        if current_data.data:
+            old_stock_val = float(current_data.data.get(stock_col) or 0)
+            
+        # 2. Update stock
+        update_data = {stock_col: request.new_stock}
+        
+        response = db.client.table(data_source)\
+            .update(update_data)\
+            .eq("username", username)\
+            .eq(part_col, request.part_number)\
+            .execute()
+            
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Item not found")
+            
+        # 3. Check for status correction (Negative -> Positive)
+        status_corrected = False
+        if old_stock_val < 0 and request.new_stock >= 0:
+            status_corrected = True
+            
+        logger.info(f"Stock updated for {request.part_number}: {old_stock_val} -> {request.new_stock}")
+            
+        return {
+            "success": True,
+            "part_number": request.part_number,
+            "new_stock": request.new_stock,
+            "status_corrected": status_corrected,
+            "message": "Inventory Log Updated" if status_corrected else "Stock updated successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating stock: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

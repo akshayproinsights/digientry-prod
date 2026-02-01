@@ -175,7 +175,7 @@ const DashboardPage: React.FC = () => {
         }
     };
 
-    // Set header actions when filters change
+    // Set header actions
     useEffect(() => {
         setHeaderActions(
             <div className="flex items-center justify-end w-full gap-2">
@@ -195,32 +195,11 @@ const DashboardPage: React.FC = () => {
                     <Package size={16} />
                     <span className="font-medium">Upload Inventory</span>
                 </button>
-
-                {/* Divider */}
-                <div className="h-8 w-px bg-gray-300 mx-2"></div>
-
-
-                {/* Advanced Filters Toggle */}
-                <button
-                    onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
-                    className="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-3 py-1 rounded-lg hover:bg-gray-50 transition"
-                >
-                    <span className="text-xs font-medium">Advanced Filters</span>
-                    <ChevronDown
-                        size={14}
-                        className={`transition-transform ${showAdvancedFilters ? 'rotate-180' : ''}`}
-                    />
-                    {hasActiveFilters && (
-                        <span className="ml-1 bg-indigo-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-full">
-                            {[customerFilter, vehicleFilter, partNumberFilter].filter(Boolean).length}
-                        </span>
-                    )}
-                </button>
             </div >
         );
 
         return () => setHeaderActions(null);
-    }, [selectedPreset, showAdvancedFilters, hasActiveFilters, customerFilter, vehicleFilter, partNumberFilter, setHeaderActions]);
+    }, [setHeaderActions, navigate]);
 
     // Draft PO handlers
     const handleAddToDraft = (item: any) => {
@@ -281,46 +260,7 @@ const DashboardPage: React.FC = () => {
 
     return (
         <div className="space-y-4 pb-8">
-            {/* Advanced Filters Panel (Only shown when toggled) */}
-            {showAdvancedFilters && (
-                <div className="bg-white border border-gray-200 rounded-lg p-4">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <AutocompleteInput
-                            value={customerFilter}
-                            onChange={setCustomerFilter}
-                            placeholder="Search customer..."
-                            label="Customer Name"
-                            getSuggestions={dashboardAPI.getCustomerSuggestions}
-                        />
-                        <AutocompleteInput
-                            value={vehicleFilter}
-                            onChange={setVehicleFilter}
-                            placeholder="Search vehicle..."
-                            label="Vehicle Number"
-                            getSuggestions={dashboardAPI.getVehicleSuggestions}
-                        />
-                        <AutocompleteInput
-                            value={partNumberFilter}
-                            onChange={setPartNumberFilter}
-                            placeholder="Search customer item..."
-                            label="Customer Item"
-                            getSuggestions={dashboardAPI.getPartSuggestions}
-                        />
-                    </div>
 
-                    {/* Clear Filters Button */}
-                    {hasActiveFilters && (
-                        <div className="mt-4 flex justify-end">
-                            <button
-                                onClick={clearAllFilters}
-                                className="text-sm text-gray-600 hover:text-gray-800 font-medium"
-                            >
-                                Clear All Filters
-                            </button>
-                        </div>
-                    )}
-                </div>
-            )}
 
             {/* Active Filter Badges */}
             {hasActiveFilters && (
@@ -453,8 +393,8 @@ const DashboardPage: React.FC = () => {
                     }}
                 />
 
-                {/* Sales Trend Chart - Now on Right (50%) - Fixed Height */}
-                <div className="lg:col-span-6 bg-white rounded-lg h-[500px]">
+                {/* Sales Trend Chart - Now on Right (50%) - Flexible Height */}
+                <div className="lg:col-span-6 bg-white rounded-lg">
                     <SalesTrendChart
                         data={dailySales || []}
                         isLoading={salesLoading}
@@ -462,36 +402,100 @@ const DashboardPage: React.FC = () => {
                         startDate={dateRange.start}
                         endDate={dateRange.end}
                         filterControls={
-                            <div className="flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-lg p-1">
+                            <div className="flex items-center gap-3">
+                                {/* Advanced Filter Toggle */}
                                 <button
-                                    onClick={() => setDatePreset('week')}
-                                    className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'week'
-                                        ? 'bg-white text-indigo-600 shadow-sm border border-gray-200'
-                                        : 'text-gray-600 hover:bg-gray-200'
+                                    onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+                                    className={`flex items-center gap-2 border px-3 py-1 rounded-lg transition ${showAdvancedFilters
+                                        ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                                        : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
                                         }`}
                                 >
-                                    This Week
+                                    <span className="text-xs font-medium">Filters</span>
+                                    <ChevronDown
+                                        size={14}
+                                        className={`transition-transform ${showAdvancedFilters ? 'rotate-180' : ''}`}
+                                    />
+                                    {hasActiveFilters && (
+                                        <span className="bg-indigo-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-full">
+                                            {[customerFilter, vehicleFilter, partNumberFilter].filter(Boolean).length}
+                                        </span>
+                                    )}
                                 </button>
-                                <button
-                                    onClick={() => setDatePreset('all')}
-                                    className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'all'
-                                        ? 'bg-white text-indigo-600 shadow-sm border border-gray-200'
-                                        : 'text-gray-600 hover:bg-gray-200'
-                                        }`}
-                                >
-                                    ALL
-                                </button>
-                                <button
-                                    onClick={() => setDatePreset('custom')}
-                                    className={`px-3 py-1 rounded-md text-xs font-medium transition flex items-center gap-1 ${selectedPreset === 'custom'
-                                        ? 'bg-white text-indigo-600 shadow-sm border border-gray-200'
-                                        : 'text-gray-600 hover:bg-gray-200'
-                                        }`}
-                                >
-                                    <Calendar size={12} />
-                                    Custom
-                                </button>
+
+                                {/* Date Presets */}
+                                <div className="flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-lg p-1">
+                                    <button
+                                        onClick={() => setDatePreset('week')}
+                                        className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'week'
+                                            ? 'bg-white text-indigo-600 shadow-sm border border-gray-200'
+                                            : 'text-gray-600 hover:bg-gray-200'
+                                            }`}
+                                    >
+                                        This Week
+                                    </button>
+                                    <button
+                                        onClick={() => setDatePreset('all')}
+                                        className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedPreset === 'all'
+                                            ? 'bg-white text-indigo-600 shadow-sm border border-gray-200'
+                                            : 'text-gray-600 hover:bg-gray-200'
+                                            }`}
+                                    >
+                                        ALL
+                                    </button>
+                                    <button
+                                        onClick={() => setDatePreset('custom')}
+                                        className={`px-3 py-1 rounded-md text-xs font-medium transition flex items-center gap-1 ${selectedPreset === 'custom'
+                                            ? 'bg-white text-indigo-600 shadow-sm border border-gray-200'
+                                            : 'text-gray-600 hover:bg-gray-200'
+                                            }`}
+                                    >
+                                        <Calendar size={12} />
+                                        Custom
+                                    </button>
+                                </div>
                             </div>
+                        }
+                        filterPanel={
+                            showAdvancedFilters && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pb-2">
+                                    <AutocompleteInput
+                                        value={customerFilter}
+                                        onChange={setCustomerFilter}
+                                        placeholder="Search customer..."
+                                        label="Customer Name"
+                                        getSuggestions={dashboardAPI.getCustomerSuggestions}
+                                    />
+                                    <AutocompleteInput
+                                        value={vehicleFilter}
+                                        onChange={setVehicleFilter}
+                                        placeholder="Search vehicle..."
+                                        label="Vehicle Number"
+                                        getSuggestions={dashboardAPI.getVehicleSuggestions}
+                                    />
+                                    <div className="md:col-span-2">
+                                        <AutocompleteInput
+                                            value={partNumberFilter}
+                                            onChange={setPartNumberFilter}
+                                            placeholder="Search item..."
+                                            label="Customer Item"
+                                            getSuggestions={dashboardAPI.getPartSuggestions}
+                                        />
+                                    </div>
+
+                                    {/* Clear Filters Button */}
+                                    {hasActiveFilters && (
+                                        <div className="md:col-span-2 flex justify-end">
+                                            <button
+                                                onClick={clearAllFilters}
+                                                className="text-xs text-gray-500 hover:text-red-600 font-medium flex items-center gap-1"
+                                            >
+                                                <X size={12} /> Clear All Filters
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            )
                         }
                     />
                 </div>

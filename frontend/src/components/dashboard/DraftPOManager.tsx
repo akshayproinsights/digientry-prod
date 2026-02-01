@@ -1,10 +1,157 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Trash2, ShoppingCart, FileText, Loader2, AlertCircle } from 'lucide-react';
+import { Trash2, ShoppingCart, FileText, Loader2, AlertCircle, Check } from 'lucide-react';
 import { purchaseOrderAPI, type DraftPOItem as APIDraftPOItem, type ProceedToPORequest } from '../../services/purchaseOrderAPI';
 import MaterialRequestPDF from './MaterialRequestPDF';
 import AutocompleteInput from './AutocompleteInput';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
+
+
+interface SmartQtyInputProps {
+    value: number;
+    partNumber: string;
+    onSave: (partNumber: string, qty: number) => Promise<void>;
+    min?: number;
+    disabled?: boolean;
+}
+
+// SmartQtyInput Component - Traffic Light Editing System
+const SmartQtyInput: React.FC<SmartQtyInputProps> = ({
+    value,
+    partNumber,
+    onSave,
+    min = 1,
+    disabled = false
+}) => {
+    const [localValue, setLocalValue] = useState(value);
+    const [cellState, setCellState] = useState<'default' | 'editing' | 'success' | 'error'>('default');
+    const [showCheck, setShowCheck] = useState(false);
+    const inputRef = React.useRef<HTMLInputElement>(null);
+
+    // Sync with prop value when it changes
+    useEffect(() => {
+        setLocalValue(value);
+    }, [value]);
+
+    const handleFocus = () => {
+        setCellState('editing');
+    };
+
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const newValue = e.target.value;
+
+        // Validate input
+        if (newValue === '') {
+            setLocalValue(0); // Temporary, will be validated on blur
+            setCellState('editing');
+            return;
+        }
+
+        const numValue = parseInt(newValue);
+        if (isNaN(numValue) || numValue < min) {
+            setCellState('error');
+            setLocalValue(parseInt(newValue) || 0); // Keep typing but show error
+        } else {
+            setCellState('editing');
+            setLocalValue(numValue);
+        }
+    };
+
+    const handleBlur = async () => {
+        // Don't save if there's an error state
+        if (cellState === 'error') {
+            setLocalValue(value); // Revert
+            setCellState('default');
+            return;
+        }
+
+        // Only save if value changed
+        if (localValue !== value) {
+            try {
+                // Ensure value is valid before saving
+                const finalValue = Math.max(min, localValue);
+                if (finalValue !== localValue) {
+                    setLocalValue(finalValue);
+                }
+
+                await onSave(partNumber, finalValue);
+
+                // Success state
+                setCellState('success');
+                setShowCheck(true);
+
+                // Flash green for 1.5 seconds
+                setTimeout(() => {
+                    setCellState('default');
+                    setShowCheck(false);
+                }, 1500);
+            } catch (error) {
+                // Error state
+                setCellState('error');
+                console.error('Save failed:', error);
+                // Optionally revert or stay in error
+            }
+        } else {
+            setCellState('default');
+        }
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter') {
+            inputRef.current?.blur();
+        } else if (e.key === 'Escape') {
+            setLocalValue(value);
+            setCellState('default');
+            inputRef.current?.blur();
+        }
+    };
+
+    // Background color based on state
+    const getBgColor = () => {
+        switch (cellState) {
+            case 'editing': return 'bg-yellow-50';
+            case 'success': return 'bg-green-100';
+            case 'error': return 'bg-red-50';
+            default: return 'bg-white hover:bg-gray-50';
+        }
+    };
+
+    // Border color based on state
+    const getBorderColor = () => {
+        switch (cellState) {
+            case 'editing': return 'border-yellow-400 ring-2 ring-yellow-200';
+            case 'success': return 'border-green-500';
+            case 'error': return 'border-red-500 ring-2 ring-red-200';
+            default: return 'border-gray-300';
+        }
+    };
+
+    return (
+        <div className="relative w-20 mx-auto">
+            <input
+                ref={inputRef}
+                type="number"
+                value={localValue}
+                onFocus={handleFocus}
+                onChange={handleChange}
+                onBlur={handleBlur}
+                onKeyDown={handleKeyDown}
+                disabled={disabled || cellState === 'success'}
+                className={`w-full h-8 px-2 py-1 text-sm text-center font-medium border rounded transition-all duration-200 
+                    ${getBgColor()} ${getBorderColor()}
+                    focus:outline-none
+                    disabled:cursor-wait
+                `}
+                min={min}
+            />
+            {showCheck && (
+                <div className="absolute -right-4 top-1/2 transform -translate-y-1/2">
+                    <Check size={14} className="text-green-600" />
+                </div>
+            )}
+        </div>
+    );
+};
 
 export interface DraftPOItem {
     part_number: string;
@@ -474,15 +621,11 @@ const DraftPOManager: React.FC<DraftPOManagerProps> = ({
 
                                                 {/* Column 3: Qty - 14% width, centered */}
                                                 <td className="px-2 py-2 text-center">
-                                                    <input
-                                                        type="number"
-                                                        min="1"
+                                                    <SmartQtyInput
                                                         value={item.reorder_qty}
-                                                        onChange={(e) => {
-                                                            const newQty = parseInt(e.target.value) || 1;
-                                                            handleUpdateQty(item.part_number, newQty);
-                                                        }}
-                                                        className="w-16 h-8 px-2 py-1 text-sm text-center font-medium border border-gray-300 rounded focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none tabular-nums transition-all hover:border-gray-400"
+                                                        partNumber={item.part_number}
+                                                        onSave={handleUpdateQty}
+                                                        min={1}
                                                         disabled={loading}
                                                     />
                                                 </td>

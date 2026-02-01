@@ -1,150 +1,93 @@
 
 import sys
 import os
+from dotenv import load_dotenv
 
 # Add parent directory to path to import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Load env variables from backend/.env
+env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+print(f"Loading .env from: {env_path}")
+load_dotenv(env_path)
+
 from database import get_database_client
 import json
+from rapidfuzz import fuzz
 
+def normalize_part_number(part_number: str) -> str:
+    """Normalize part number for matching (remove spaces, lowercase)"""
+    if not part_number:
+        return ""
+    return part_number.strip().replace(" ", "").replace("-", "").lower()
+
+def fuzzy_match_part_numbers(part1: str, part2: str, threshold: float = 99.0) -> bool:
+    norm1 = normalize_part_number(part1)
+    norm2 = normalize_part_number(part2)
+    if norm1 == norm2:
+        return True
+    similarity = fuzz.ratio(norm1, norm2)
+    return similarity >= threshold
 
 def debug_stock_item(part_number):
     print(f"--- Debugging Stock Item: {part_number} ---")
+    
+
+    # Check if SUPABASE_URL is set
+    print(f"SUPABASE_URL: {os.environ.get('SUPABASE_URL')}")
+    print(f"SUPABASE_SERVICE_ROLE_KEY: {'[SET]' if os.environ.get('SUPABASE_SERVICE_ROLE_KEY') else '[NOT SET]'}")
+
+    db = get_database_client()
+    
+
+    # Check if SUPABASE_URL is set
+    print(f"SUPABASE_URL: {os.environ.get('SUPABASE_URL')}")
+    print(f"SUPABASE_SERVICE_ROLE_KEY: {'[SET]' if os.environ.get('SUPABASE_SERVICE_ROLE_KEY') else '[NOT SET]'}")
+
     db = get_database_client()
 
-    # Inspect table columns
-    try:
-        print("Inspecting table columns...")
-        # Since we can't easily query information_schema with supabase-py client (it restricts), 
-        # we can try to select one row and see keys?
-        # Or try a raw RPC call if available.
-        # Let's try selecting one row from inventory_items
-        res = db.client.table("inventory_items").select("*").limit(1).execute()
-        if res.data:
-            print(f"inventory_items columns: {list(res.data[0].keys())}")
-        else:
-            print("inventory_items is empty, cannot deduce columns.")
-            
-        res = db.client.table("stock_levels").select("*").limit(1).execute()
-        if res.data:
-            print(f"stock_levels columns: {list(res.data[0].keys())}")
-        else:
-             print("stock_levels is empty.")
-             
-    except Exception as e:
-        print(f"Error inspecting columns: {e}")
+    print(f"\n========== GLOBAL SEARCH FOR PART: {part_number} ==========")
     
     try:
-        # 1. Search in stock_levels GLOBALLY
-        print("Checking stock_levels globally...")
-        res = db.client.table("stock_levels").select("*").eq("part_number", part_number).execute()
+        # 1. Search Inventory Items GLOBALLY
+        print("Checking inventory_items (Global)...")
+        inventory = db.client.table("inventory_items").select("*").eq("part_number", part_number).execute()
         
-        username = None # Initialize username here
-
-        if res.data:
-            print(f"Found {len(res.data)} records in stock_levels:")
-            for item in res.data:
-                print(f"User: {item.get('username')}, Part: {item.get('part_number')}, Stock: {item.get('current_stock')}")
-                # Use the first found username for further checks
-                if not username:
-                    username = item.get("username")
+        if inventory.data:
+            print(f"✅ FOUND {len(inventory.data)} records in inventory_items:")
+            users_found = set()
+            for item in inventory.data:
+                users_found.add(item.get("username"))
+                print(f"  User: {item.get('username')}, Qty: {item.get('qty')}, Excluded: {item.get('excluded_from_stock')}")
+            
+            print(f"Users found with this part: {users_found}")
         else:
-            print("No records found in stock_levels globally.")
+            print("❌ No records found in inventory_items globally.")
 
-        # Check inventory items GLOBALLY
-        print(f"Checking inventory_items globally for {part_number}...")
-        inv_res = db.client.table("inventory_items").select("*").eq("part_number", part_number).execute()
-        if inv_res.data:
-             print(f"Found {len(inv_res.data)} inventory items globally:")
-             for item in inv_res.data:
-                 print(f"User: {item.get('username')}, Desc: {item.get('description')}, Qty: {item.get('qty')}")
-                 if not username:
-                     username = item.get("username")
-        else:
-             print("No inventory items found globally.")
-
-        if not username:
-             print("Could not determine username. Defaulting to 'adnak'.")
-             username = "adnak"
-
-        print(f"--- Debugging for user: {username} ---")
-
-        # 2. Check stock_by_part logic simulation (Miniature version)
+        # 2. Search Stock Levels GLOBALLY
+        print("\nChecking stock_levels (Global)...")
+        stock = db.client.table("stock_levels").select("*").eq("part_number", part_number).execute()
         
-        # IN
-        vendor_items = db.client.table("inventory_items").select("*").eq("username", username).eq("part_number", part_number).execute()
-        total_in = 0
-        for item in (vendor_items.data or []):
-             qty = float(item.get("qty", 0) or 0)
-             total_in += qty
-             print(f"IN: {item.get('description')} - Qty: {qty}")
-        print(f"Total IN (Exact match): {total_in}")
+        if stock.data:
+             print(f"✅ FOUND {len(stock.data)} records in stock_levels:")
+             for item in stock.data:
+                 print(f"  User: {item.get('username')}, Stock: {item.get('current_stock')}, Manual: {item.get('manual_adjustment')}")
+        else:
+             print("❌ No records found in stock_levels globally.")
 
-        # OUT (This is harder because of fuzzy matching, but let's try mapping)
-        mappings = db.client.table("vendor_mapping_entries").select("*").eq("username", username).eq("part_number", part_number).execute()
-        print(f"Mappings found: {len(mappings.data)}")
+        # 3. Search Mappings GLOBALLY
+        print("\nChecking vendor_mapping_entries (Global)...")
+        mappings = db.client.table("vendor_mapping_entries").select("*").eq("part_number", part_number).execute()
         
         if mappings.data:
-            customer_item = mappings.data[0].get("customer_item_name")
-            print(f"Mapped Customer Item: {customer_item}")
-            
-            if customer_item:
-                # Search sales
-                sales = db.client.table("verified_invoices").select("*").eq("username", username).eq("type", "Part").execute()
-                total_out = 0
-                from rapidfuzz import fuzz
-                
-                for sale in (sales.data or []):
-                    desc = sale.get("description", "")
-                    if fuzz.ratio(desc.lower(), customer_item.lower()) >= 90:
-                        qty = float(sale.get("quantity", 0) or 0)
-                        total_out += qty
-                        print(f"OUT: {desc} - Qty: {qty} (Match: {fuzz.ratio(desc.lower(), customer_item.lower())}%)")
-                
-                print(f"Total OUT (Calculated): {total_out}")
+             print(f"✅ FOUND {len(mappings.data)} records in mappings:")
+             for item in mappings.data:
+                 print(f"  User: {item.get('username')}, CustomerItem: {item.get('customer_item_name')}")
+        else:
+             print("❌ No records found in mappings globally.")
 
     except Exception as e:
-        print(f"Error: {e}")
-
-    # Fallback: Check for 'adnak' user specifically if no stock found
-    if not res.data:
-        print("\n--- Fallback: Checking for user 'adnak' ---")
-        username = "adnak"
-        
-        # Check stock levels for adnak
-        print(f"Checking stock_levels for {username} and part {part_number}...")
-        res_adnak = db.client.table("stock_levels").select("*").eq("username", username).eq("part_number", part_number).execute()
-        
-        if res_adnak.data:
-            print("Found in stock_levels for adnak!")
-            print(json.dumps(res_adnak.data[0], indent=2))
-        else:
-            print("Not found in stock_levels for adnak.")
-            
-            # Check inventory items
-            print(f"Checking inventory_items for {username}...")
-            inv_res = db.client.table("inventory_items").select("*").eq("username", username).eq("part_number", part_number).execute()
-            if inv_res.data:
-                print(f"Found {len(inv_res.data)} inventory items:")
-                total_in = 0
-                for item in inv_res.data:
-                    qty = float(item.get("qty", 0) or 0)
-                    total_in += qty
-                    print(f"- {item.get('description')} (Qty: {qty}, Date: {item.get('invoice_date')})")
-                print(f"Total IN from inventory_items: {total_in}")
-            else:
-                print("No inventory items found for adnak either.")
-                
-            # Try adnak-local
-            print("\n--- Fallback: Checking for user 'adnak-local' ---")
-            username = "adnak-local"
-            res_local = db.client.table("stock_levels").select("*").eq("username", username).eq("part_number", part_number).execute()
-            if res_local.data:
-                print("Found in stock_levels for adnak-local!")
-                print(json.dumps(res_local.data[0], indent=2))
-            else:
-                 print("Not found in stock_levels for adnak-local.")
+        print(f"Error checking global: {e}")
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

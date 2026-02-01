@@ -20,6 +20,7 @@ interface SalesTrendChartProps {
     startDate?: string;
     endDate?: string;
     filterControls?: React.ReactNode;
+    filterPanel?: React.ReactNode;
 }
 
 const SalesTrendChart: React.FC<SalesTrendChartProps> = ({
@@ -29,6 +30,7 @@ const SalesTrendChart: React.FC<SalesTrendChartProps> = ({
     startDate,
     endDate,
     filterControls,
+    filterPanel,
 }) => {
     // Process data to ensure continuous date range
     const processedData = useMemo(() => {
@@ -121,16 +123,25 @@ const SalesTrendChart: React.FC<SalesTrendChartProps> = ({
     };
 
     return (
-        <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 h-[500px] flex flex-col justify-center">
+        <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 min-h-[500px] flex flex-col justify-center">
             {/* Dynamic Header */}
-            <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-gray-900">
-                    Revenue Overview
-                    <span className="text-sm text-gray-500 font-normal ml-2">({dateRangeLabel})</span>
-                </h3>
-                {filterControls && (
-                    <div className="flex items-center">
-                        {filterControls}
+            <div className="mb-4 flex flex-col gap-4">
+                <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-gray-900">
+                        Revenue Overview
+                        <span className="text-sm text-gray-500 font-normal ml-2">({dateRangeLabel})</span>
+                    </h3>
+                    {filterControls && (
+                        <div className="flex items-center">
+                            {filterControls}
+                        </div>
+                    )}
+                </div>
+
+                {/* Expandable Filter Panel */}
+                {filterPanel && (
+                    <div className="w-full border-t border-gray-100 pt-4 animate-in slide-in-from-top-2 duration-200">
+                        {filterPanel}
                     </div>
                 )}
             </div>

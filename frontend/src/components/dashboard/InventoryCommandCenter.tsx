@@ -1,7 +1,9 @@
 import React, { useState, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, Search, ShoppingCart, CheckCircle2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle, Search, ShoppingCart, CheckCircle2, ClipboardList } from 'lucide-react';
 import { dashboardAPI } from '../../services/dashboardAPI';
+import StockStepper from './StockStepper';
 
 interface InventoryItem {
     part_number: string;
@@ -22,6 +24,8 @@ type PriorityTab = 'All Items' | 'P0 - High' | 'P1 - Medium' | 'P2 - Low' | 'P3 
 type PriorityValue = '' | 'P0' | 'P1' | 'P2' | 'P3';
 
 const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems, onAddToDraft }) => {
+    const navigate = useNavigate();
+    const queryClient = useQueryClient();
     const [activeTab, setActiveTab] = useState<PriorityTab>('All Items');
     const [searchQuery, setSearchQuery] = useState('');
 
@@ -59,28 +63,73 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
         setSearchQuery(''); // Clear search when changing tabs
     };
 
+    // Handle stock updates with optimistic cache updates
+    const handleStockUpdate = async (partNumber: string, newStock: number) => {
+        // Optimistically update caches
+        const updateItemInList = (items: InventoryItem[]) => {
+            return items.map(item => {
+                if (item.part_number === partNumber) {
+                    return { ...item, current_stock: newStock };
+                }
+                return item;
+            });
+        };
+
+        // Update main inventory cache
+        queryClient.setQueryData(['inventoryByPriority', tabToPriority(activeTab)], (oldData: any) => {
+            if (!oldData) return oldData;
+
+            // Deep update if possible, but simplified here for the list we use
+            // The structure is { summary: ..., critical_items: [...] }
+            if (oldData.critical_items) {
+                return {
+                    ...oldData,
+                    critical_items: updateItemInList(oldData.critical_items)
+                };
+            }
+            return oldData;
+        });
+
+        // Update search cache if active
+        if (searchQuery) {
+            queryClient.setQueryData(['inventorySearch', searchQuery], (oldData: any) => {
+                if (!oldData) return oldData;
+                if (oldData.items) {
+                    return {
+                        ...oldData,
+                        items: updateItemInList(oldData.items)
+                    };
+                }
+                return oldData;
+            });
+        }
+
+        // Perform actual API call
+        return dashboardAPI.updateStock(partNumber, newStock);
+    };
+
     // Use search results if searching, otherwise use priority-filtered items
     const rawItems: InventoryItem[] = useMemo(() => {
         if (searchQuery.trim() && searchData?.items) {
-            return searchData.items.map(item => ({
+            return searchData.items.map((item: any) => ({
                 part_number: item.part_number,
                 item_name: item.item_name,
                 current_stock: item.current_stock,
                 reorder_point: item.reorder_point,
-                stock_value: item.current_stock * 100,
+                stock_value: item.current_stock * 100, // Approximate if value missing
                 priority: item.priority,
-                unit_value: (item as any).unit_value, // Price data if available
+                unit_value: item.unit_value, // Price data if available
             }));
         }
 
-        return inventoryData?.critical_items?.map(item => ({
+        return inventoryData?.critical_items?.map((item: any) => ({
             part_number: item.part_number,
             item_name: item.item_name,
             current_stock: item.current_stock,
             reorder_point: item.reorder_point,
             stock_value: item.current_stock * 100,
             priority: item.priority,
-            unit_value: (item as any).unit_value, // Price data if available
+            unit_value: item.unit_value, // Price data if available
         })) || [];
     }, [searchQuery, searchData, inventoryData]);
 
@@ -107,11 +156,13 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
         return { label: 'In Stock', color: 'bg-green-100 text-green-800' };
     };
 
+    // Dynamic progress bar calculation
     const getStockPercentage = (item: InventoryItem): number => {
         if (item.current_stock < 0) return 0;
         if (item.reorder_point === 0) return 100;
 
         // Calculate percentage relative to reorder point, capped at 100%
+        // Visual tweak: if stock > reorder point, show full bar
         const percentage = (item.current_stock / item.reorder_point) * 100;
         return Math.min(percentage, 100);
     };
@@ -184,7 +235,16 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
             {/* Header with Tabs */}
             <div className="border-b border-gray-200">
                 <div className="px-6 pt-4">
-                    <h2 className="text-lg font-semibold text-gray-900 mb-3">Quick Reorder List (Top Critical Items)</h2>
+                    <div className="flex items-center justify-between mb-3">
+                        <h2 className="text-lg font-semibold text-gray-900">Quick Reorder List (Top Critical Items)</h2>
+                        <button
+                            onClick={() => navigate('/inventory/stock')}
+                            className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-colors duration-200"
+                        >
+                            <ClipboardList size={16} />
+                            My Stock Register
+                        </button>
+                    </div>
                     <div className="flex gap-1">
                         {tabs.map((tab) => (
                             <button
@@ -236,6 +296,7 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
                                 <thead className="sticky top-0 z-10 bg-gray-50 shadow-sm">
                                     <tr className="border-b border-gray-200 text-left">
                                         <th className="px-4 py-2 text-sm font-semibold text-gray-700">Item Details</th>
+                                        <th className="px-4 py-2 text-sm font-semibold text-gray-700 bg-orange-50/50">On Hand</th>
                                         <th className="px-4 py-2 text-sm font-semibold text-gray-700">Stock Status</th>
                                         <th className="px-4 py-2 text-sm font-semibold text-gray-700">Status</th>
                                         <th className="px-4 py-2 text-sm font-semibold text-gray-700 text-right">Last Price</th>
@@ -252,7 +313,7 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
 
                                         return (
                                             <tr
-                                                key={index}
+                                                key={item.part_number || index}
                                                 className={`border-b border-gray-100 hover:bg-gray-50 transition-colors ${isInDraft ? 'bg-gray-50 opacity-75' : ''
                                                     }`}
                                             >
@@ -268,24 +329,31 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
                                                     </div>
                                                 </td>
 
-                                                {/* Column 2: Visual Stock Status with TABULAR-NUMS */}
+                                                {/* Column 2: On Hand - Editable Stepper */}
+                                                <td className="px-4 py-2.5 bg-orange-50/30">
+                                                    <StockStepper
+                                                        currentStock={item.current_stock}
+                                                        partNumber={item.part_number}
+                                                        onUpdate={handleStockUpdate}
+                                                    />
+                                                </td>
+
+                                                {/* Column 3: Visual Stock Status (Progress + Reorder Limit) */}
                                                 <td className="px-4 py-2.5">
-                                                    <div className="min-w-[200px]">
-                                                        <div className="w-full bg-gray-200 rounded-full h-2.5 mb-1">
+                                                    <div className="min-w-[140px] max-w-[180px]">
+                                                        <div className="w-full bg-gray-200 rounded-full h-2.5 mb-1.5">
                                                             <div
-                                                                className={`${progressColor} h-2.5 rounded-full transition-all`}
+                                                                className={`${progressColor} h-2.5 rounded-full transition-all duration-500 ease-out`}
                                                                 style={{ width: `${stockPercent}%` }}
                                                             ></div>
                                                         </div>
-                                                        <p className="text-xs text-gray-600 tabular-nums">
-                                                            Stock: <span className={item.current_stock === 0 ? 'text-red-600 font-semibold' : item.current_stock < 0 ? 'text-red-600 font-bold' : ''}>
-                                                                {item.current_stock} units
-                                                            </span> | Reorder: {item.reorder_point} units
+                                                        <p className="text-xs text-gray-500 tabular-nums font-medium">
+                                                            Reorder Limit: <span className="text-gray-900">{item.reorder_point}</span>
                                                         </p>
                                                     </div>
                                                 </td>
 
-                                                {/* Column 3: Status Badge */}
+                                                {/* Column 4: Status Badge */}
                                                 <td className="px-4 py-2.5">
                                                     <span
                                                         className={`inline-block text-xs font-medium px-2.5 py-1 rounded-full whitespace-nowrap ${status.color}`}
@@ -294,19 +362,19 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
                                                     </span>
                                                 </td>
 
-                                                {/* Column 4: Last Price with TABULAR-NUMS (Right-Aligned for Financial Data) */}
+                                                {/* Column 5: Last Price (Right-Aligned) */}
                                                 <td className="px-4 py-2.5 text-right">
                                                     <span className="text-sm text-gray-600 font-medium tabular-nums">
                                                         {formatPrice(item.unit_value)}
                                                     </span>
                                                 </td>
 
-                                                {/* Column 5: Smart Status - Conditional Rendering */}
+                                                {/* Column 6: Action */}
                                                 <td className="px-4 py-2.5">
                                                     {isInDraft ? (
                                                         <div className="flex items-center gap-1.5 px-2.5 h-8 rounded-md font-medium text-xs bg-green-100 text-green-700 border border-green-300">
                                                             <CheckCircle2 size={14} className="flex-shrink-0" />
-                                                            <span className="whitespace-nowrap">Added (Qty: {draftQty})</span>
+                                                            <span className="whitespace-nowrap">Added ({draftQty})</span>
                                                         </div>
                                                     ) : (
                                                         <button
@@ -332,3 +400,4 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
 };
 
 export default QuickReorderList;
+

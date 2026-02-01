@@ -81,7 +81,9 @@ export interface CriticalItem {
     reorder_point: number;
     priority: string;
     stock_ratio: number;
+    unit_value?: number; // Last buy price
 }
+
 
 export interface InventoryPriorityResponse {
     summary: InventoryByPriority;
@@ -242,4 +244,16 @@ export const dashboardAPI = {
         const response = await apiClient.get(`/api/dashboard/inventory-search?${params.toString()}`);
         return response.data;
     },
+
+    /**
+     * Update stock value for an item
+     */
+    updateStock: async (partNumber: string, newStock: number): Promise<{ success: boolean; status_corrected?: boolean; message?: string }> => {
+        const response = await apiClient.patch('/api/dashboard/update-stock', {
+            part_number: partNumber,
+            new_stock: newStock
+        });
+        return response.data;
+    },
 };
+

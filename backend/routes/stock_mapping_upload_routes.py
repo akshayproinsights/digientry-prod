@@ -230,9 +230,69 @@ async def upload_mapping_sheet(
                     logger.info(f"✏️ Updated stock count for {part_number} -> {stock}")
 
             else:
-                # SKIP - part number not found in existing stock_levels
-                skipped_count += 1
-                logger.warning(f"⚠️ Skipped part {part_number}: not found in stock_levels (extracted from image but no match)")
+                # If not found in stock_levels, check if it exists in inventory_items (perhaps deleted/excluded)
+                # This allows "Restoring" a deleted item by uploading the mapping sheet
+                inventory_check = db.client.table("inventory_items")\
+                    .select("id")\
+                    .eq("username", username)\
+                    .eq("part_number", part_number)\
+                    .limit(1)\
+                    .execute()
+                
+                if inventory_check.data:
+                    # Item exists in inventory history! It might be excluded.
+                    # 1. Un-exclude it (Restore)
+                    db.client.table("inventory_items")\
+                        .update({"excluded_from_stock": False})\
+                        .eq("username", username)\
+                        .eq("part_number", part_number)\
+                        .execute()
+                    logger.info(f"♻️ Restored/Un-excluded inventory items for {part_number}")
+                    
+                    # 2. Create Mapping Entry (so it maps correctly in recalculation)
+                    mapping_upsert_data = {
+                        "username": username,
+                        "part_number": part_number,
+                        "vendor_description": vendor_description or part_number, # Fallback
+                        "status": "Restored", # Distinguish from "Added"
+                        "updated_at": datetime.now().isoformat(),
+                        "created_at": datetime.now().isoformat()
+                    }
+                     # Add fields if present
+                    if customer_item:
+                        mapping_upsert_data["customer_item_name"] = customer_item
+                    else:
+                        mapping_upsert_data["customer_item_name"] = "" 
+                        
+                    if priority:
+                        mapping_upsert_data["priority"] = priority
+                    if reorder is not None:
+                        mapping_upsert_data["reorder_point"] = reorder
+
+                    # Check for existing mapping (unlikely if stock_levels was gone, but safe to check)
+                    existing_mapping = db.client.table("vendor_mapping_entries")\
+                        .select("id")\
+                        .eq("username", username)\
+                        .eq("part_number", part_number)\
+                        .execute()
+                        
+                    if existing_mapping.data:
+                        db.client.table("vendor_mapping_entries")\
+                            .update(mapping_upsert_data)\
+                            .eq("id", existing_mapping.data[0]["id"])\
+                            .execute()
+                    else:
+                        db.client.table("vendor_mapping_entries")\
+                            .insert(mapping_upsert_data)\
+                            .execute()
+                            
+                    updated_stock_count += 1 # Effectively updated stock by restoring it
+                    logger.info(f"✨ Restored mapping + un-excluded inventory for {part_number}")
+
+                else:
+                    # SKIP - part number truly not found anywhere
+                    skipped_count += 1
+                    logger.warning(f"⚠️ Skipped part {part_number}: not found in stock_levels or inventory_items")
         
         
         total_mappings = created_mapping_count + updated_mapping_count
