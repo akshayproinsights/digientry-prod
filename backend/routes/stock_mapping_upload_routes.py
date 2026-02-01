@@ -105,7 +105,7 @@ async def upload_mapping_sheet(
         
         # Generate extraction using new API
         response = client.models.generate_content(
-            model="gemini-2.0-flash-exp",
+            model="gemini-3-flash-preview",
             contents=[
                 types.Part.from_bytes(data=content, mime_type=file.content_type or "image/png"),
                 system_instruction

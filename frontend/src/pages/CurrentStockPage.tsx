@@ -1005,27 +1005,27 @@ const CurrentStockPage: React.FC = () => {
             {/* Stock Recalculation Status Banner */}
             {isCalculating && recalcStatus.status && (
                 <div className={`border-l-4 p-4 rounded-md shadow-sm ${recalcStatus.status === 'processing' || recalcStatus.status === 'queued'
-                        ? 'bg-blue-50 border-blue-500'
-                        : recalcStatus.status === 'completed'
-                            ? 'bg-green-50 border-green-500'
-                            : 'bg-red-50 border-red-500'
+                    ? 'bg-blue-50 border-blue-500'
+                    : recalcStatus.status === 'completed'
+                        ? 'bg-green-50 border-green-500'
+                        : 'bg-red-50 border-red-500'
                     }`}>
                     <div className="flex items-center">
                         <RefreshCw
                             className={`mr-3 ${recalcStatus.status === 'processing' || recalcStatus.status === 'queued'
-                                    ? 'text-blue-500 animate-spin'
-                                    : recalcStatus.status === 'completed'
-                                        ? 'text-green-500'
-                                        : 'text-red-500'
+                                ? 'text-blue-500 animate-spin'
+                                : recalcStatus.status === 'completed'
+                                    ? 'text-green-500'
+                                    : 'text-red-500'
                                 }`}
                             size={20}
                         />
                         <div className="flex-1">
                             <p className={`font-medium ${recalcStatus.status === 'processing' || recalcStatus.status === 'queued'
-                                    ? 'text-blue-700'
-                                    : recalcStatus.status === 'completed'
-                                        ? 'text-green-700'
-                                        : 'text-red-700'
+                                ? 'text-blue-700'
+                                : recalcStatus.status === 'completed'
+                                    ? 'text-green-700'
+                                    : 'text-red-700'
                                 }`}>
                                 {recalcStatus.status === 'queued' && 'Stock Recalculation Queued'}
                                 {recalcStatus.status === 'processing' && 'Recalculating Stock Levels...'}
@@ -1033,10 +1033,10 @@ const CurrentStockPage: React.FC = () => {
                                 {recalcStatus.status === 'failed' && 'Recalculation Failed'}
                             </p>
                             <p className={`text-sm ${recalcStatus.status === 'processing' || recalcStatus.status === 'queued'
-                                    ? 'text-blue-600'
-                                    : recalcStatus.status === 'completed'
-                                        ? 'text-green-600'
-                                        : 'text-red-600'
+                                ? 'text-blue-600'
+                                : recalcStatus.status === 'completed'
+                                    ? 'text-green-600'
+                                    : 'text-red-600'
                                 }`}>
                                 {recalcStatus.message || 'Please wait...'}
                             </p>
@@ -1457,7 +1457,18 @@ const CurrentStockPage: React.FC = () => {
                                                 <td className="px-2 py-2 w-[1%] whitespace-nowrap text-sm text-center">
                                                     <div className="flex justify-center">
                                                         {(() => {
-                                                            const status = item.status || 'In Stock';
+                                                            // Calculate status dynamically based on current effective stock
+                                                            const onHand = Math.round((item.current_stock || 0) + (item.manual_adjustment || 0));
+                                                            // Use default reorder point of 2 if not set (same as loadData logic)
+                                                            const reorderPoint = (item.reorder_point === 0 || item.reorder_point === null) ? 2 : item.reorder_point;
+
+                                                            let status = 'In Stock';
+                                                            if (onHand <= 0) {
+                                                                status = 'Out of Stock';
+                                                            } else if (onHand < reorderPoint) {
+                                                                status = 'Low Stock';
+                                                            }
+
                                                             const colors = {
                                                                 'In Stock': 'bg-green-100 text-green-800',
                                                                 'Low Stock': 'bg-orange-100 text-orange-800',
