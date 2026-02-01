@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
 import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2, CheckSquare, Square, XCircle } from 'lucide-react';
-import { purchaseOrderAPI } from '../services/purchaseOrderAPI';
+
 import DeleteConfirmModal from '../components/DeleteConfirmModal';
 import {
     getStockLevels,
@@ -10,7 +10,6 @@ import {
     updateStockAdjustment,
     calculateStockLevels,
     getRecalculationStatus,
-    needsRecalculation,
     getStockHistory,
     updateStockTransaction,
     deleteStockTransaction,
@@ -20,7 +19,7 @@ import {
     type StockSummary,
     type StockTransaction,
 } from '../services/stockApi';
-import { mappingSheetAPI } from '../services/api';
+
 import apiClient from '../lib/api';
 
 interface VendorItem {
@@ -235,9 +234,9 @@ const CurrentStockPage: React.FC = () => {
     // Mapping-related state
     const [openDropdowns, setOpenDropdowns] = useState<{ [key: number]: boolean }>({});
     const [searchQueries, setSearchQueries] = useState<{ [key: number]: string }>({});
-    const [suggestions, setSuggestions] = useState<{ [key: number]: VendorItem[] }>({});
+
     const [searchResults, setSearchResults] = useState<{ [key: number]: VendorItem[] }>({});
-    const [loadingSuggestions, setLoadingSuggestions] = useState<{ [key: number]: boolean }>({});
+
     const [flashGreen, setFlashGreen] = useState<{ [key: number]: boolean }>({});
     const [localCustomerItems, setLocalCustomerItems] = useState<{ [key: number]: string }>({});
     const [isMappingInProgress, setIsMappingInProgress] = useState(false); // Lock to prevent re-sort during mapping;
@@ -250,7 +249,7 @@ const CurrentStockPage: React.FC = () => {
     const [isSelectAllChecked, setIsSelectAllChecked] = useState(false);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [itemToDelete, setItemToDelete] = useState<StockLevel | null>(null);
-    const [addingToPO, setAddingToPO] = useState<Set<string>>(new Set());
+
 
 
     const searchTimeoutRef = useRef<{ [key: number]: number }>({});
@@ -584,35 +583,6 @@ const CurrentStockPage: React.FC = () => {
         }
     };
 
-    // Load unique customer items for dropdown
-    const loadSuggestions = async (itemId: number) => {
-        if (suggestions[itemId] || loadingSuggestions[itemId]) return;
-
-        setLoadingSuggestions(prev => ({ ...prev, [itemId]: true }));
-        try {
-            // Fetch unique customer items from verified invoices
-            const response = await apiClient.get('/api/verified/unique-customer-items');
-            const data = response.data;
-
-            // Convert to VendorItem format for compatibility
-            const customerItems = (data.customer_items || []).map((item: string, index: number) => ({
-                id: index,
-                description: item,
-                part_number: '',
-                match_score: 100
-            }));
-
-            setSuggestions(prev => ({
-                ...prev,
-                [itemId]: customerItems
-            }));
-        } catch (err) {
-            console.error('Error loading customer items:', err);
-        } finally {
-            setLoadingSuggestions(prev => ({ ...prev, [itemId]: false }));
-        }
-    };
-
     // Handle search change with debounce - search customer items
     const handleSearchChange = (itemId: number, query: string) => {
         setSearchQueries(prev => ({ ...prev, [itemId]: query }));
@@ -776,7 +746,7 @@ const CurrentStockPage: React.FC = () => {
         if (query.trim().length > 0) {
             return searchResults[itemId] || [];
         }
-        return suggestions[itemId]?.slice(0, 50) || [];
+        return [];
     };
 
     // Upload mapping sheet handler
@@ -814,7 +784,7 @@ const CurrentStockPage: React.FC = () => {
             });
 
             // Use the updated mapping sheet upload endpoint
-            // Note: Ensure your API service method (mappingSheetAPI.upload) handles raw FormData correctly
+            // Note: Ensure your API service method handles raw FormData correctly
             // or use apiClient directly if the service wrapper assumes single file
             const response = await apiClient.post('/api/stock/mapping-sheets/upload', formData, {
                 headers: {
@@ -869,20 +839,7 @@ const CurrentStockPage: React.FC = () => {
         }
     };
 
-    // Handle delete mapping
-    const handleDeleteMapping = async (item: StockLevel) => {
-        if (!confirm(`Delete mapping for "${item.part_number}"?\n\nThis will:\n- Remove the customer item mapping\n- Return this item to unmapped state\n- Trigger stock recalculation`)) {
-            return;
-        }
 
-        try {
-            await apiClient.delete(`/api/stock/mapping/${item.part_number}`);
-            await loadData(); // Refresh entire table
-        } catch (error) {
-            console.error('Error deleting mapping:', error);
-            alert('Failed to delete mapping. Please try again.');
-        }
-    };
 
     // Handle checkbox selection
     const handleSelectRow = (rowId: number) => {
@@ -952,52 +909,7 @@ const CurrentStockPage: React.FC = () => {
         }
     };
 
-    // Handle add to draft PO
-    const handleAddToDraftPO = async (item: StockLevel) => {
-        const partNumber = item.part_number;
-        setAddingToPO(prev => new Set(prev).add(partNumber));
 
-        try {
-            await purchaseOrderAPI.quickAddToDraft(partNumber);
-
-            // Show success feedback
-            const message = `Added "${item.internal_item_name}" to Draft PO`;
-            // You can replace this with a toast notification if available
-            const notification = document.createElement('div');
-            notification.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg z-50';
-            notification.textContent = message;
-            document.body.appendChild(notification);
-
-            setTimeout(() => {
-                document.body.removeChild(notification);
-            }, 3000);
-
-        } catch (error: any) {
-            console.error('Error adding to draft PO:', error);
-            alert(error.response?.data?.detail || 'Failed to add item to draft PO');
-        } finally {
-            setAddingToPO(prev => {
-                const newSet = new Set(prev);
-                newSet.delete(partNumber);
-                return newSet;
-            });
-        }
-    };
-
-    // Status badge
-    const getStatusBadge = (status: string) => {
-        const colors = {
-            'In Stock': 'bg-green-100 text-green-800',
-            'Low Stock': 'bg-orange-100 text-orange-800',
-            'Out of Stock': 'bg-red-100 text-red-800',
-        };
-
-        return (
-            <span className={`px-3 py-1 rounded-full text-xs font-medium ${colors[status as keyof typeof colors] || 'bg-gray-100 text-gray-800'}`}>
-                {status}
-            </span>
-        );
-    };
 
     return (
         <div className="space-y-6">
@@ -1408,11 +1320,7 @@ const CurrentStockPage: React.FC = () => {
                                                             {/* Dropdown */}
                                                             {openDropdowns[item.id] && (
                                                                 <div className="absolute z-50 mt-1 w-96 bg-white border border-gray-200 rounded-lg shadow-xl max-h-60 overflow-y-auto left-0">
-                                                                    {loadingSuggestions[item.id] ? (
-                                                                        <div className="p-4 text-center text-gray-500 text-sm">
-                                                                            Loading suggestions...
-                                                                        </div>
-                                                                    ) : getDropdownOptions(item.id).length === 0 ? (
+                                                                    {getDropdownOptions(item.id).length === 0 ? (
                                                                         <div className="p-4 text-center text-gray-500 text-sm">
                                                                             No matches found. Type to search...
                                                                         </div>

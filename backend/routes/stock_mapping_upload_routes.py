@@ -141,14 +141,15 @@ async def upload_mapping_sheet(
                 
                 # Check for existing stock
                 existing_stock = db.client.table("stock_levels")\
-                    .select("id, internal_item_name")\
+                    .select("id, internal_item_name, current_stock")\
                     .eq("username", username)\
                     .eq("part_number", part_number)\
                     .execute()
                 
                 if existing_stock.data:
+                    stock_item = existing_stock.data[0]
                     # Update Vendor Mapping Entry
-                    internal_item_name = existing_stock.data[0].get("internal_item_name", vendor_description)
+                    internal_item_name = stock_item.get("internal_item_name", vendor_description)
                     
                     existing_mapping = db.client.table("vendor_mapping_entries")\
                         .select("id")\
@@ -184,10 +185,19 @@ async def upload_mapping_sheet(
                             .execute()
                         total_mappings_created += 1
                         
-                    # Update Stock Count (Old Stock)
+                    # Update Stock Count (Map to ON HAND via manual_adjustment)
                     if stock is not None:
+                         # Calculate adjustment needed to make On Hand == stock
+                        # On Hand = current_stock + manual_adjustment
+                        # desired_stock = current_stock + new_adjustment
+                        # new_adjustment = desired_stock - current_stock
+                        
+                        current_sys_stock = stock_item.get("current_stock", 0) or 0
+                        adjustment_value = stock - current_sys_stock
+                        
                         stock_update_data = {
-                            "old_stock": stock,
+                            "old_stock": stock, # Keep for legitimate history if needed
+                            "manual_adjustment": adjustment_value,
                             "image_hash": file_hash,
                             "updated_at": datetime.now().isoformat()
                         }
@@ -197,6 +207,7 @@ async def upload_mapping_sheet(
                             .eq("part_number", part_number)\
                             .execute()
                         total_stock_updates += 1
+                        logger.info(f"✏️ Updated stock for {part_number}: Target={stock}, Current={current_sys_stock}, Adj={adjustment_value}")
                         
                 else:
                     # Restore deleted items if found in inventory
@@ -248,6 +259,34 @@ async def upload_mapping_sheet(
                                 .execute()
                                 
                         total_stock_updates += 1 # Count restoration as update
+                        logger.info(f"✨ Restored mapping + un-excluded inventory for {part_number}")
+
+                        # Update Stock for Restored Item (if stock provided)
+                        if stock is not None:
+                            # For restored items, current_stock will be 0 until recalculation
+                            # So we set manual_adjustment = stock
+                            
+                            # Try to create a dummy stock_levels record for now so manual_adjustment is saved
+                            # Recalc will overwrite but preserve manual_adjustment
+                            try:
+                                db.client.table("stock_levels").insert({
+                                    "username": username,
+                                    "part_number": part_number,
+                                    "internal_item_name": vendor_description or part_number,
+                                    "current_stock": 0,
+                                    "manual_adjustment": stock,
+                                    "old_stock": stock,
+                                    "updated_at": datetime.now().isoformat()
+                                }).execute()
+                                logger.info(f"✨ Created stock_level for restored item {part_number} with stock {stock}")
+                            except Exception as insert_err:
+                                logger.warning(f"Could not insert stock_level for restored item (might exist?): {insert_err}")
+                                # Fallback update
+                                db.client.table("stock_levels")\
+                                    .update({"manual_adjustment": stock, "old_stock": stock})\
+                                    .eq("username", username)\
+                                    .eq("part_number", part_number)\
+                                    .execute()
             
             processed_count += 1
 
