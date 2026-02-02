@@ -478,12 +478,17 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                 });
             });
 
-            setSyncProgress({ isOpen: false, stage: '', percentage: 0, message: '' });
+            setSyncProgress({
+                isOpen: true,
+                stage: 'success',
+                percentage: 100,
+                message: 'All changes have been saved and verified successfully!'
+            });
             queryClient.invalidateQueries({ queryKey: ['review-invoice-details'] });
             queryClient.invalidateQueries({ queryKey: ['review-dates'] });
             queryClient.invalidateQueries({ queryKey: ['review-amounts'] });
             queryClient.invalidateQueries({ queryKey: ['verified'] });
-            alert('All changes have been saved and verified successfully!');
+            // alert('All changes have been saved and verified successfully!'); // REMOVED
         } catch (error) {
             setSyncProgress({ isOpen: false, stage: '', percentage: 0, message: '' });
             alert(`Error: ${error instanceof Error ? error.message : 'Unable to complete operation'} `);
@@ -989,6 +994,10 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                 stage={syncProgress.stage}
                 percentage={syncProgress.percentage}
                 message={syncProgress.message}
+                onClose={() => {
+                    setSyncProgress({ isOpen: false, stage: '', percentage: 0, message: '' });
+                    navigate('/');
+                }}
             />
 
             {/* Delete Confirmation Modal */}

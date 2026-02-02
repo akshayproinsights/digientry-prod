@@ -20,6 +20,7 @@ from config_loader import load_user_config
 from config import get_mappings_folder, get_google_api_key
 from google import genai
 from google.genai import types
+from utils.image_optimizer import optimize_image_for_gemini, should_optimize_image, validate_image_quality
 
 # Import recalculation wrapper for background execution
 from routes.stock_routes import recalculate_stock_wrapper
@@ -96,27 +97,54 @@ async def upload_mapping_sheet(
             content = await file.read()
             file_hash = calculate_file_hash(content)
             
+            # 2. Optimize image before upload (same as sales uploads)
+            try:
+                # Validate image quality
+                validation = validate_image_quality(content)
+                if not validation['is_acceptable']:
+                    for warning in validation['warnings']:
+                        logger.warning(f"{file.filename}: {warning}")
+                
+                # Optimize image if needed to reduce size and improve Gemini speed
+                if should_optimize_image(content):
+                    logger.info(f"Optimizing mapping sheet: {file.filename}")
+                    optimized_content, metadata = optimize_image_for_gemini(content)
+                    
+                    logger.info(f"Optimization results for {file.filename}:")
+                    logger.info(f"  Original: {metadata['original_size_kb']}KB, {metadata['original_dimensions'][0]}x{metadata['original_dimensions'][1]}")
+                    logger.info(f"  Optimized: {metadata['optimized_size_kb']}KB, {metadata['final_dimensions'][0]}x{metadata['final_dimensions'][1]}")
+                    logger.info(f"  Compression: {metadata['compression_ratio']}% reduction")
+                    
+                    content = optimized_content
+                else:
+                    logger.info(f"Skipping optimization for {file.filename} (already optimal)")
+            except Exception as opt_err:
+                logger.warning(f"Image optimization failed for {file.filename}, using original: {opt_err}")
+                # Continue with original content if optimization fails
+            
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             extension = file.filename.split(".")[-1] if "." in file.filename else "pdf"
             filename = f"{timestamp}_{file_hash[:8]}.{extension}"
             key = f"{mappings_folder}{filename}"
             
-            # 2. Upload to R2
+            # 3. Upload optimized image to R2
+            # Always use JPEG content type after optimization
+            content_type = "image/jpeg"  # Our optimizer always outputs JPEG
             success = storage.upload_file(
                 file_data=content,
                 bucket=bucket,
                 key=key,
-                content_type=file.content_type
+                content_type=content_type
             )
             
             if success:
                 last_image_url = storage.get_public_url(bucket, key)
             
-            # 3. Extract data using Gemini
+            # 4. Extract data using Gemini
             response = client.models.generate_content(
                 model="gemini-3-flash-preview",
                 contents=[
-                    types.Part.from_bytes(data=content, mime_type=file.content_type or "image/png"),
+                    types.Part.from_bytes(data=content, mime_type=content_type),
                     system_instruction
                 ],
                 config=types.GenerateContentConfig(
@@ -139,14 +167,14 @@ async def upload_mapping_sheet(
             
             # 4. Process extracted rows
             for index, row in enumerate(rows_data):
-                row_number = row.get("row_number")
+                row_number = safe_int(row.get("row_number"))
                 if row_number is None:
                     row_number = index + 1
                     
                 part_number = row.get("part_number")
                 vendor_description = row.get("vendor_description")
                 customer_item = row.get("customer_item")
-                priority = row.get("priority")
+                priority = safe_int(row.get("priority"))
                 stock = safe_int(row.get("stock"))
                 reorder = safe_int(row.get("reorder"))
                 

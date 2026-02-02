@@ -52,60 +52,77 @@ const UploadPage: React.FC = () => {
 
         let interval: any = null;
 
-        const checkStatus = () => {
+        const checkStatus = async () => {
             console.log('🔍 [UPLOAD-PAGE] checkStatus called');
 
-            // First check if there's a saved completion status
-            const savedCompletion = localStorage.getItem('salesCompletionStatus');
-            console.log('🔍 [UPLOAD-PAGE] savedCompletion:', savedCompletion ? 'EXISTS' : 'NULL');
-
-            if (savedCompletion) { // REMOVED CLOSURE BUG: !isProcessing && !isUploading
-                try {
-                    const completionData = JSON.parse(savedCompletion);
-                    if (JSON.stringify(processingStatus) !== JSON.stringify(completionData)) {
-                        console.log('🔄 [DEBUG] Found completion status in background, loading...');
-                        setProcessingStatus(completionData);
-                        // Restore ref from saved stats
-                        if (completionData.duplicateStats) {
-                            duplicateStatsRef.current = completionData.duplicateStats;
-                        }
-                    }
-                    setIsProcessing(false);
-                    setIsUploading(false);
-                    setFiles([]);
-
-                    const processed = completionData.progress?.processed || 0;
-                    setSalesStatus({
-                        isUploading: false,
-                        processingCount: 0,
-                        reviewCount: 0,
-                        syncCount: processed,
-                        isComplete: true
-                    });
-
-                    // Stop polling if we found completion
-                    if (interval) clearInterval(interval);
-                    return true; // Signal handled
-                } catch (e) {
-                    console.error('❌ [UPLOAD-PAGE] Error parsing sales completion:', e);
-                    localStorage.removeItem('salesCompletionStatus');
-                }
-            }
-
+            // Priority 1: Check localStorage for immediate active task ID
             const activeTaskId = localStorage.getItem('activeSalesTaskId');
-            console.log('🔍 [UPLOAD-PAGE] activeTaskId:', activeTaskId || 'NULL');
-            console.log('🔍 [UPLOAD-PAGE] intervalRef.current:', intervalRef.current ? 'ACTIVE' : 'NULL');
-
-            if (activeTaskId && !intervalRef.current) { // REMOVED CLOSURE BUG: !isProcessing
+            if (activeTaskId && !intervalRef.current) {
                 console.log('🚀 [UPLOAD-PAGE] Found active task, resuming polling:', activeTaskId);
-
-                // CRITICAL: Set processing state IMMEDIATELY/RESUME
                 setIsProcessing(true);
                 setIsUploading(false);
                 setSalesStatus({ isUploading: false, processingCount: 1, totalProcessing: 1, reviewCount: 0, syncCount: 0, isComplete: false });
-
                 startPolling(activeTaskId);
                 return true;
+            }
+
+            // Priority 2: Check backend for any recent ongoing or just-completed tasks
+            try {
+                const recentTask = await salesAPI.getRecentTask();
+                if (recentTask && recentTask.task_id) {
+                    // Check if we have already seen/acknowledged this specific task
+                    const lastSeenId = localStorage.getItem('lastSeenSalesTaskId');
+
+                    // If the task is DIFFERENT from the last one we saw completed
+                    // OR if it is currently processing (always show processing)
+                    const isNewTask = recentTask.task_id !== lastSeenId;
+
+                    if (recentTask.status === 'processing' || recentTask.status === 'queued' || recentTask.status === 'duplicate_detected') {
+                        console.log('🔄 [UPLOAD-PAGE] Resuming recent task from backend:', recentTask.task_id);
+                        setIsProcessing(true);
+                        setIsUploading(false);
+                        localStorage.setItem('activeSalesTaskId', recentTask.task_id);
+
+                        // If queued/processing, start polling
+                        if (recentTask.status !== 'duplicate_detected') {
+                            startPolling(recentTask.task_id);
+                        } else {
+                            // If suspended state (duplicates), manually set state without polling
+                            setProcessingStatus(recentTask);
+                            setSalesStatus({
+                                isUploading: false,
+                                processingCount: 0,
+                                reviewCount: recentTask.duplicates?.length || 0,
+                                syncCount: recentTask.progress?.processed || 0
+                            });
+
+                            // Trigger duplicate modal setup immediately
+                            const duplicates = recentTask.duplicates || [];
+                            if (duplicates.length > 0) {
+                                setDuplicateQueue(duplicates);
+                                setCurrentDuplicateIndex(0);
+                                setDuplicateInfo(duplicates[0]);
+                                setShowDuplicateModal(true);
+                                setFilesToSkip([]);
+                                setFilesToForceUpload([]);
+                                setUploadedFiles(recentTask.uploaded_r2_keys || []);
+                                (window as any).__temp_r2_keys = recentTask.uploaded_r2_keys || [];
+                            }
+                        }
+                        return true;
+                    }
+
+                    // If task is completed and we HAVEN'T seen it yet (regardless of time)
+                    const isCompleted = recentTask.status === 'completed' || recentTask.status === 'failed';
+                    if (isCompleted && isNewTask) {
+                        console.log('✅ [UPLOAD-PAGE] Found unseen completed task, showing success:', recentTask.task_id);
+                        finishProcessing(recentTask);
+                        return true;
+                    }
+                }
+            } catch (e) {
+                // Ignore 404s (no recent task)
+                console.log('⏸️ [UPLOAD-PAGE] No recent task found or error checking:', e);
             }
 
             console.log('⏸️ [UPLOAD-PAGE] No active task or completion found');
@@ -204,24 +221,15 @@ const UploadPage: React.FC = () => {
 
         // Initial check
         console.log('🎬 [UPLOAD-PAGE] Running initial checkStatus...');
-        if (!checkStatus()) {
-            // If initially idle, set up an idle poller to watch for background updates
-            console.log('⏰ [UPLOAD-PAGE] Setting up idle watcher (2s interval)');
-            const idleWatcher = setInterval(() => {
-                console.log('⏰ [UPLOAD-PAGE] Idle watcher tick...');
-                checkStatus();
-            }, 2000); // Check every 2 seconds
-
-            return () => {
-                console.log('🧹 [UPLOAD-PAGE] Cleanup - stopping idle watcher');
-                clearInterval(idleWatcher);
-                if (intervalRef.current) {
-                    clearInterval(intervalRef.current);
-                    intervalRef.current = null;
-                }
-                setSalesStatus({ isComplete: false });
-            };
-        }
+        checkStatus().then((handled) => {
+            if (!handled) {
+                // Optional: periodic check for new tasks started elsewhere (e.g. another tab)
+                // const idleWatcher = setInterval(() => {
+                //     checkStatus();
+                // }, 10000);
+                // return () => clearInterval(idleWatcher);
+            }
+        });
 
         // Cleanup on unmount - IMPORTANT: Don't clear session, just stop polling
         return () => {
@@ -782,6 +790,7 @@ const UploadPage: React.FC = () => {
             // Backend has valid status - preserve ALL data and just update status + message
             const completionData = {
                 ...statusToUse,
+                task_id: statusToUse.task_id || processingStatus?.task_id || '', // Preserve ID
                 status: 'completed',
                 message: summaryMessage,
                 duplicateStats: {
@@ -790,6 +799,10 @@ const UploadPage: React.FC = () => {
                     newFiles: newCount
                 }
             };
+
+            if (completionData.task_id) {
+                localStorage.setItem('lastSeenSalesTaskId', completionData.task_id);
+            }
 
             setProcessingStatus(completionData);
 

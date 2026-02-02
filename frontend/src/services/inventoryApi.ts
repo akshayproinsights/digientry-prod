@@ -42,6 +42,14 @@ export const inventoryAPI = {
     },
 
     /**
+     * Get the most recent inventory processing task
+     */
+    getRecentTask: async () => {
+        const response = await apiClient.get('/api/inventory/recent-task');
+        return response.data;
+    },
+
+    /**
      * Get inventory items with optional filtering
      */
     getInventoryItems: async (showAll: boolean = false) => {

@@ -69,6 +69,11 @@ export const uploadAPI = {
         return response.data;
     },
 
+    getRecentTask: async () => {
+        const response = await apiClient.get('/api/upload/recent-task');
+        return response.data;
+    },
+
     getFileUrl: async (fileKey: string) => {
         const response = await apiClient.get(`/api/upload/files/view/${encodeURIComponent(fileKey)}`);
         return response.data.url;

@@ -246,6 +246,7 @@ async def process_inventory(
     """
     Trigger inventory processing in thread pool
     """
+    logger.info(f"Received inventory process request for {len(request.file_keys)} files")
     task_id = str(uuid.uuid4())
     
     # Get r2_bucket from user config

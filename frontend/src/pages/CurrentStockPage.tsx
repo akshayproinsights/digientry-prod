@@ -451,8 +451,17 @@ const CurrentStockPage: React.FC = () => {
         }
     }, [loadData]);
 
+    // Prevent double-firing in Strict Mode
+    const hasAutoRecalculated = useRef(false);
+
     // Trigger stock recalculation
     const triggerRecalculation = useCallback(async () => {
+        // Clear any existing interval first to prevent orphaned loops
+        if (recalcIntervalRef.current !== null) {
+            clearInterval(recalcIntervalRef.current);
+            recalcIntervalRef.current = null;
+        }
+
         try {
             setIsCalculating(true);
             const result = await calculateStockLevels();
@@ -485,6 +494,10 @@ const CurrentStockPage: React.FC = () => {
 
     // Auto-trigger recalculation when page loads - ALWAYS FORCE RECALC per user request
     useEffect(() => {
+        // Skip if already ran once
+        if (hasAutoRecalculated.current) return;
+        hasAutoRecalculated.current = true;
+
         const autoRecalculate = async () => {
             try {
                 // Always trigger recalculation on mount as per user request
@@ -496,7 +509,7 @@ const CurrentStockPage: React.FC = () => {
         };
 
         autoRecalculate();
-    }, []); // Run only once on mount
+    }, [triggerRecalculation]); // Added dependency
 
     // Trigger stock calculation manually (button click)
     const handleCalculateStock = async () => {
