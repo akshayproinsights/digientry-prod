@@ -394,7 +394,7 @@ const DashboardPage: React.FC = () => {
                 />
 
                 {/* Sales Trend Chart - Now on Right (50%) - Flexible Height */}
-                <div className="lg:col-span-6 bg-white rounded-lg">
+                <div className="lg:col-span-6">
                     <SalesTrendChart
                         data={dailySales || []}
                         isLoading={salesLoading}

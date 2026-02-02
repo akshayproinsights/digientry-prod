@@ -260,6 +260,7 @@ async def process_inventory(
         "task_id": task_id,
         "username": current_user.get("username", "user"),
         "status": "queued",
+        "task_type": "inventory", # NEW: Distinguish task type
         "message": "Processing queued",
         "progress": {
             "total": len(request.file_keys),
@@ -361,6 +362,7 @@ async def get_recent_inventory_task(
         response = db.client.table("upload_tasks")\
             .select("*")\
             .eq("username", current_user.get("username"))\
+            .eq("task_type", "inventory")\
             .order("created_at", desc=True)\
             .limit(1)\
             .execute()

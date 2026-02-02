@@ -268,10 +268,16 @@ def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.Da
             
             if not in_base and not in_included:
                 # This is an orphaned record - create synthetic invoice record
+                # FIXED: Check if Receipt Link exists (mapped to r2_file_path which is NOT NULL)
+                receipt_link = row.get('Receipt Link', '')
+                if not receipt_link or str(receipt_link).strip() == '':
+                    logger.warning(f"⚠️ Skipping orphaned Date verification record {row_id_val} due to missing Receipt Link")
+                    continue
+
                 synthetic_record = {
                     rowid_col_raw: row_id_val,
                     'Receipt Number': row.get('Receipt Number', ''),
-                    'Receipt Link': row.get('Receipt Link', ''),
+                    'Receipt Link': receipt_link,
                     'Date': row.get('Date', None),
                     'Upload Date': row.get('Upload Date', None),
                     'Review Status': 'Verified'
@@ -301,10 +307,16 @@ def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.Da
             
             if not in_base and not in_included:
                 # This is an orphaned record - create synthetic invoice record
+                # FIXED: Check if Receipt Link exists (mapped to r2_file_path which is NOT NULL)
+                receipt_link = row.get('Receipt Link', '')
+                if not receipt_link or str(receipt_link).strip() == '':
+                    logger.warning(f"⚠️ Skipping orphaned Amount verification record {row_id_val} due to missing Receipt Link")
+                    continue
+
                 synthetic_record = {
                     rowid_col_raw: row_id_val,
                     'Receipt Number': row.get('Receipt Number', ''),
-                    'Receipt Link': row.get('Receipt Link', ''),
+                    'Receipt Link': receipt_link,
                     'Description': row.get('Description', ''),
                     'Quantity': row.get('Quantity', None),
                     'Rate': row.get('Rate', None),

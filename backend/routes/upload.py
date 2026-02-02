@@ -301,6 +301,7 @@ async def process_invoices_endpoint(
         "task_id": task_id,
         "username": username,
         "status": "queued",
+        "task_type": "sales",  # NEW: Distinguish task type
         "message": "Processing queued",
         "progress": {
             "total": len(request.file_keys),
@@ -424,6 +425,7 @@ async def get_recent_sales_task(
         response = db.client.table("upload_tasks")\
             .select("*")\
             .eq("username", current_user.get("username"))\
+            .eq("task_type", "sales")\
             .order("created_at", desc=True)\
             .limit(1)\
             .execute()

@@ -828,7 +828,7 @@ def recalculate_stock_wrapper(task_id: str, username: str):
         })
         
         # Run the actual recalculation (blocking operation, but in thread pool)
-        recalculate_stock_for_user(username)
+        recalculate_stock_for_user(username, current_task_id=task_id)
         
         # Update status to completed
         update_task_status({
@@ -854,58 +854,81 @@ def recalculate_stock_wrapper(task_id: str, username: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def recalculate_stock_for_user(username: str):
+def recalculate_stock_for_user(username: str, current_task_id: Optional[str] = None):
     """
     Core logic to recalculate stock levels for a user.
     Can be called from other routes after invoice processing.
     
-    THREAD-SAFE: Uses PostgreSQL advisory lock to prevent concurrent
-    recalculations for the same user, ensuring atomicity of the
-    delete-then-insert operation.
+    CONCURRENCY CONTROL:
+    Instead of PostgreSQL advisory locks (which are session-bound and flaky with 
+    stateless HTTP clients), we check the 'recalculation_tasks' table for 
+    other running tasks.
     """
     db = get_database_client()
     
-    # Generate unique lock ID from username (consistent hash)
-    # PostgreSQL advisory locks use bigint, so we need a 64-bit integer
-    import hashlib
-    lock_id = int(hashlib.sha256(username.encode()).hexdigest()[:16], 16) % (2**63 - 1)
+    logger.info(f"Starting stock recalculation for {username} (Task: {current_task_id})")
     
-    logger.info(f"Starting stock recalculation for {username} (lock_id={lock_id})")
-    
-    # Try to acquire PostgreSQL advisory lock (non-blocking)
-    # This prevents race conditions during the delete-then-insert operation
+    # 1. Check for concurrent tasks in progress
     try:
-        logger.info(f"Attempting to acquire advisory lock for user {username}...")
-        lock_result = db.client.rpc('acquire_stock_lock', {'p_lock_id': lock_id}).execute()
+        # Get tasks that are 'processing' for this user
+        # We need to filter out the current task if provided
+        query = db.client.table("recalculation_tasks")\
+            .select("task_id, created_at")\
+            .eq("username", username)\
+            .eq("status", "processing")
+            
+        if current_task_id:
+            query = query.neq("task_id", current_task_id)
+            
+        running_tasks = query.execute()
         
-        # Check if lock was acquired (returns boolean)
-        lock_acquired = lock_result.data if lock_result.data is not None else False
+        if running_tasks.data and len(running_tasks.data) > 0:
+            # Check if they are stale (older than 5 minutes)
+            # This is a fail-safe in case a worker died without updating status
+            active_collision = False
+            
+            for task in running_tasks.data:
+                created_at_str = task.get("created_at")
+                if created_at_str:
+                    try:
+                        # Parse simplified ISO format
+                        created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                        age = (datetime.utcnow() - created_at.replace(tzinfo=None)).total_seconds()
+                        
+                        if age < 300:  # 5 minutes
+                            active_collision = True
+                            logger.warning(f"⚠️ Found active concurrent task: {task.get('task_id')} (started {int(age)}s ago)")
+                            break
+                        else:
+                            logger.warning(f"⚠️ Found STALE concurrent task: {task.get('task_id')} (started {int(age)}s ago) - Ignoring")
+                    except Exception as e:
+                        logger.warning(f"Error parsing task date: {e} - Assuming active")
+                        active_collision = True
+                        break
+            
+            if active_collision:
+                logger.warning(f"❌ Stock recalculation already in progress for {username}")
+                raise HTTPException(
+                    status_code=409,
+                    detail="Stock recalculation already in progress for this user. Please wait for it to complete."
+                )
         
-        if not lock_acquired:
-            logger.warning(f"❌ Stock recalculation already in progress for {username}")
-            raise HTTPException(
-                status_code=409,
-                detail="Stock recalculation already in progress for this user. Please wait for it to complete."
-            )
+        logger.info(f"✓ Concurrency check passed for {username}")
         
-        logger.info(f"✓ Lock acquired for {username}")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to acquire advisory lock for {username}: {e}")
-        raise
+        logger.error(f"Error checking concurrency for {username}: {e}")
+        # Proceed cautiously even if check fails, to avoid blockage
+        pass
     
     try:
-        # ALL THE RECALCULATION LOGIC RUNS INSIDE THE LOCK
+        # Perform the actual recalculation
         _perform_stock_recalculation(username, db)
-    finally:
-        # ALWAYS release the lock, even if recalculation fails
-        try:
-            logger.info(f"Releasing advisory lock for {username}...")
-            db.client.rpc('release_stock_lock', {'p_lock_id': lock_id}).execute()
-            logger.info(f"✓ Lock released for {username}")
-        except Exception as e:
-            logger.error(f"Failed to release advisory lock for {username}: {e}")
+        
+    except Exception as e:
+        logger.error(f"Error during stock recalculation for {username}: {e}")
+        raise
 
 
 def _perform_stock_recalculation(username: str, db):
