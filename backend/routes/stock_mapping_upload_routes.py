@@ -349,12 +349,13 @@ async def upload_mapping_sheet(
                         # desired_stock = current_stock + new_adjustment
                         # new_adjustment = desired_stock - current_stock
                         
-                        current_sys_stock = stock_item.get("current_stock", 0) or 0
-                        adjustment_value = stock - current_sys_stock
+                        # CRITICAL: Convert to int to prevent float values (e.g., "6.0" error)
+                        current_sys_stock = int(stock_item.get("current_stock", 0) or 0)
+                        adjustment_value = int(stock - current_sys_stock)
                         
                         stock_update_data = {
-                            "old_stock": stock,  # Keep for legitimate history if needed
-                            "manual_adjustment": adjustment_value,
+                            "old_stock": int(stock),  # Ensure integer
+                            "manual_adjustment": adjustment_value,  # Now guaranteed to be int
                             "image_hash": file_hash,
                             "updated_at": datetime.now().isoformat()
                         }
@@ -441,8 +442,8 @@ async def upload_mapping_sheet(
                                     "part_number": part_number,
                                     "internal_item_name": vendor_description or part_number,
                                     "current_stock": 0,
-                                    "manual_adjustment": stock,
-                                    "old_stock": stock,
+                                    "manual_adjustment": int(stock),  # Ensure integer
+                                    "old_stock": int(stock),  # Ensure integer
                                     "updated_at": datetime.now().isoformat()
                                 }).execute()
                                 logger.info(f"✨ Created stock_level for restored item {part_number} with stock {stock}")
@@ -450,7 +451,7 @@ async def upload_mapping_sheet(
                                 logger.warning(f"Could not insert stock_level for restored item (might exist?): {insert_err}")
                                 # Fallback update
                                 db.client.table("stock_levels")\
-                                    .update({"manual_adjustment": stock, "old_stock": stock})\
+                                    .update({"manual_adjustment": int(stock), "old_stock": int(stock)})\
                                     .eq("username", username)\
                                     .eq("part_number", part_number)\
                                     .execute()
