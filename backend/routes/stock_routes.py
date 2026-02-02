@@ -1682,7 +1682,11 @@ async def export_inventory_count_sheet(
             ]
             wrapped_data.append(wrapped_row)
         
-        table = Table(wrapped_data, colWidths=[0.4*inch, 2.2*inch, 1.0*inch, 2.0*inch, 0.6*inch, 0.8*inch, 0.5*inch])
+        table = Table(
+            wrapped_data, 
+            colWidths=[0.4*inch, 2.2*inch, 1.0*inch, 2.0*inch, 0.6*inch, 0.8*inch, 0.5*inch],
+            repeatRows=1  # Repeat header row on every page
+        )
         table.setStyle(TableStyle([
             # Header styling
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),

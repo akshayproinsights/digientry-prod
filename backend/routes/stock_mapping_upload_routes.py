@@ -37,14 +37,112 @@ def calculate_file_hash(content: bytes) -> str:
 
 
 
-def safe_int(value):
-    """Safely convert value to int, handling floats and strings."""
+def safe_int(value, field_name="unknown"):
+    """Safely convert value to int, handling floats and strings.
+    
+    Args:
+        value: The value to convert
+        field_name: Name of the field being converted (for logging)
+    
+    Returns:
+        Integer value or None if conversion fails
+    """
     if value is None:
         return None
+    
+    # If already an integer, return it
+    if isinstance(value, int):
+        return value
+    
     try:
         # Convert to float first to handle "6.0", then to int
-        return int(float(value))
-    except (ValueError, TypeError):
+        result = int(float(value))
+        logger.debug(f"safe_int({field_name}): '{value}' ({type(value).__name__}) -> {result}")
+        return result
+    except (ValueError, TypeError) as e:
+        logger.warning(f"safe_int({field_name}): Failed to convert '{value}' ({type(value).__name__}): {e}")
+        return None
+
+
+def parse_priority(value) -> Optional[int]:
+    """
+    Parse priority field from various formats used by Indian SMBs.
+    Handles: P0, P1, P2, P3, 0, 1, 2, 3, p0, Po, PO, etc.
+    
+    Args:
+        value: Raw priority value from Gemini extraction
+    
+    Returns:
+        Integer 0-3 or None if invalid/empty
+    """
+    if value is None or value == "":
+        return None
+    
+    # Convert to string and clean
+    value_str = str(value).strip().upper()
+    
+    # Handle P0-P3 format (remove 'P' prefix)
+    if value_str.startswith('P'):
+        value_str = value_str[1:]  # Remove 'P'
+    
+    # Try to convert to int
+    try:
+        priority_int = int(float(value_str))
+        # Validate range 0-3
+        if 0 <= priority_int <= 3:
+            logger.debug(f"parse_priority: '{value}' → {priority_int}")
+            return priority_int
+        else:
+            logger.warning(f"parse_priority: '{value}' out of range (0-3), returning None")
+            return None
+    except (ValueError, TypeError) as e:
+        logger.warning(f"parse_priority: Failed to parse '{value}': {e}")
+        return None
+
+
+def parse_stock_or_reorder(value, field_name="stock") -> Optional[int]:
+    """
+    Parse stock/reorder fields, handling zero vs empty circle ambiguity.
+    
+    Context: Indian SMBs often use:
+    - Actual numbers (1, 2, 10, etc.) for counted items
+    - "O" or circles for "not yet counted" (should be NULL)
+    - "0" (zero) for actual zero count
+    
+    Rules:
+    - Actual number (1, 2, 10, etc.) → return as-is
+    - "0" (zero) → return 0
+    - "O" (letter O), "o", circle symbols → return None (not counted)
+    - Empty/blank → return None
+    
+    Args:
+        value: Raw value from Gemini extraction
+        field_name: Name of field for logging
+    
+    Returns:
+        Integer value or None
+    """
+    if value is None or value == "":
+        logger.debug(f"parse_{field_name}: empty/None → null")
+        return None
+    
+    # Convert to string and clean
+    value_str = str(value).strip()
+    
+    # Check for circle indicators (empty/not counted)
+    # Common patterns: 'O', 'o', circle symbols, 'null' string
+    circle_indicators = ['O', 'o', '○', '◯', 'null', 'NULL']
+    if value_str in circle_indicators:
+        logger.debug(f"parse_{field_name}: '{value}' → null (circle/empty marker)")
+        return None
+    
+    # Try to parse as number (handles '0', '10', '5.0', etc.)
+    try:
+        result = int(float(value_str))
+        logger.debug(f"parse_{field_name}: '{value}' → {result}")
+        return result
+    except (ValueError, TypeError) as e:
+        logger.warning(f"parse_{field_name}: Failed to parse '{value}', treating as null: {e}")
         return None
 
 @router.post("/upload", response_model=MappingSheetUploadResponse)
@@ -167,16 +265,21 @@ async def upload_mapping_sheet(
             
             # 4. Process extracted rows
             for index, row in enumerate(rows_data):
-                row_number = safe_int(row.get("row_number"))
+                # Extract and convert all fields with robust parsing
+                row_number = safe_int(row.get("row_number"), "row_number")
                 if row_number is None:
                     row_number = index + 1
                     
                 part_number = row.get("part_number")
                 vendor_description = row.get("vendor_description")
                 customer_item = row.get("customer_item")
-                priority = safe_int(row.get("priority"))
-                stock = safe_int(row.get("stock"))
-                reorder = safe_int(row.get("reorder"))
+                
+                # Use robust parsing functions for handwritten fields
+                priority = parse_priority(row.get("priority"))
+                stock = parse_stock_or_reorder(row.get("stock"), "stock")
+                reorder = parse_stock_or_reorder(row.get("reorder"), "reorder")
+                
+                logger.info(f"📋 Row {index + 1}: part={part_number}, priority={priority}, stock={stock}, reorder={reorder}")
                 
                 if not part_number:
                     continue
@@ -207,25 +310,37 @@ async def upload_mapping_sheet(
                         "updated_at": datetime.now().isoformat()
                     }
                     
-                    if customer_item: mapping_upsert_data["customer_item_name"] = customer_item
-                    if priority: mapping_upsert_data["priority"] = priority
-                    if reorder is not None: mapping_upsert_data["reorder_point"] = reorder
+                    # Use 'is not None' to properly handle 0 values
+                    if customer_item: 
+                        mapping_upsert_data["customer_item_name"] = customer_item
+                    if priority is not None: 
+                        mapping_upsert_data["priority"] = priority
+                    if reorder is not None: 
+                        mapping_upsert_data["reorder_point"] = reorder
                     
-                    if existing_mapping.data:
-                        db.client.table("vendor_mapping_entries")\
-                            .update(mapping_upsert_data)\
-                            .eq("id", existing_mapping.data[0]["id"])\
-                            .execute()
-                        total_mappings_updated += 1
-                    else:
-                        mapping_upsert_data["row_number"] = row_number
-                        mapping_upsert_data["created_at"] = datetime.now().isoformat()
-                        if not customer_item: mapping_upsert_data["customer_item_name"] = ""
-                        
-                        db.client.table("vendor_mapping_entries")\
-                            .insert(mapping_upsert_data)\
-                            .execute()
-                        total_mappings_created += 1
+                    try:
+                        if existing_mapping.data:
+                            logger.debug(f"Updating mapping for {part_number}: {mapping_upsert_data}")
+                            db.client.table("vendor_mapping_entries")\
+                                .update(mapping_upsert_data)\
+                                .eq("id", existing_mapping.data[0]["id"])\
+                                .execute()
+                            total_mappings_updated += 1
+                        else:
+                            mapping_upsert_data["row_number"] = row_number
+                            mapping_upsert_data["created_at"] = datetime.now().isoformat()
+                            if not customer_item: 
+                                mapping_upsert_data["customer_item_name"] = ""
+                            
+                            logger.debug(f"Inserting new mapping for {part_number}: {mapping_upsert_data}")
+                            db.client.table("vendor_mapping_entries")\
+                                .insert(mapping_upsert_data)\
+                                .execute()
+                            total_mappings_created += 1
+                    except Exception as db_err:
+                        logger.error(f"Database error for mapping {part_number}: {db_err}")
+                        logger.error(f"Problematic data: {mapping_upsert_data}")
+                        raise
                         
                     # Update Stock Count (Map to ON HAND via manual_adjustment)
                     if stock is not None:
@@ -238,17 +353,24 @@ async def upload_mapping_sheet(
                         adjustment_value = stock - current_sys_stock
                         
                         stock_update_data = {
-                            "old_stock": stock, # Keep for legitimate history if needed
+                            "old_stock": stock,  # Keep for legitimate history if needed
                             "manual_adjustment": adjustment_value,
                             "image_hash": file_hash,
                             "updated_at": datetime.now().isoformat()
                         }
-                        db.client.table("stock_levels")\
-                            .update(stock_update_data)\
-                            .eq("username", username)\
-                            .eq("part_number", part_number)\
-                            .execute()
-                        total_stock_updates += 1
+                        
+                        try:
+                            logger.debug(f"Updating stock for {part_number}: {stock_update_data}")
+                            db.client.table("stock_levels")\
+                                .update(stock_update_data)\
+                                .eq("username", username)\
+                                .eq("part_number", part_number)\
+                                .execute()
+                            total_stock_updates += 1
+                        except Exception as db_err:
+                            logger.error(f"Database error updating stock for {part_number}: {db_err}")
+                            logger.error(f"Problematic data: {stock_update_data}")
+                            raise
                         logger.info(f"✏️ Updated stock for {part_number}: Target={stock}, Current={current_sys_stock}, Adj={adjustment_value}")
                         
                 else:
@@ -278,10 +400,13 @@ async def upload_mapping_sheet(
                             "created_at": datetime.now().isoformat()
                         }
                         
-                        if customer_item: mapping_upsert_data["customer_item_name"] = customer_item
-                        else: mapping_upsert_data["customer_item_name"] = ""
+                        if customer_item: 
+                            mapping_upsert_data["customer_item_name"] = customer_item
+                        else: 
+                            mapping_upsert_data["customer_item_name"] = ""
                         
-                        if priority: mapping_upsert_data["priority"] = priority
+                        if priority is not None: 
+                            mapping_upsert_data["priority"] = priority
                         if reorder is not None: mapping_upsert_data["reorder_point"] = reorder
                         
                         existing_mapping = db.client.table("vendor_mapping_entries")\

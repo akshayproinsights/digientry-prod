@@ -2,7 +2,7 @@
 Main FastAPI application.
 Handles routing, middleware, and application lifecycle.
 """
-print("DigiEntry Backend is starting......")
+print("DigiEntry Backend is starting......Final done")
 # Final check done yep done yes git yep done api done yesss
 # Initial deployment trigger done yeah d addddd
 from fastapi import FastAPI
