@@ -5,15 +5,16 @@
 DROP FUNCTION IF EXISTS acquire_stock_lock(bigint);
 DROP FUNCTION IF EXISTS release_stock_lock(bigint);
 
--- Wrapper function to acquire advisory lock
+-- Wrapper function to acquire advisory lock (non-blocking)
 -- Custom name avoids conflicts with system function
 CREATE FUNCTION acquire_stock_lock(p_lock_id bigint)
-RETURNS void
+RETURNS boolean
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    -- Call native PostgreSQL advisory lock
-    PERFORM pg_advisory_lock(p_lock_id);
+    -- Use TRY variant to avoid blocking and statement timeout
+    -- Returns true if lock acquired, false if already held
+    RETURN pg_try_advisory_lock(p_lock_id);
 END;
 $$;
 

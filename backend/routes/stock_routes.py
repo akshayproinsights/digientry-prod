@@ -872,12 +872,25 @@ def recalculate_stock_for_user(username: str):
     
     logger.info(f"Starting stock recalculation for {username} (lock_id={lock_id})")
     
-    # Acquire PostgreSQL advisory lock (blocks if another recalculation is running for this user)
+    # Try to acquire PostgreSQL advisory lock (non-blocking)
     # This prevents race conditions during the delete-then-insert operation
     try:
-        logger.info(f"Acquiring advisory lock for user {username}...")
+        logger.info(f"Attempting to acquire advisory lock for user {username}...")
         lock_result = db.client.rpc('acquire_stock_lock', {'p_lock_id': lock_id}).execute()
+        
+        # Check if lock was acquired (returns boolean)
+        lock_acquired = lock_result.data if lock_result.data is not None else False
+        
+        if not lock_acquired:
+            logger.warning(f"❌ Stock recalculation already in progress for {username}")
+            raise HTTPException(
+                status_code=409,
+                detail="Stock recalculation already in progress for this user. Please wait for it to complete."
+            )
+        
         logger.info(f"✓ Lock acquired for {username}")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to acquire advisory lock for {username}: {e}")
         raise

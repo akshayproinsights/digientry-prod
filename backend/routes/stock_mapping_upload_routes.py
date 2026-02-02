@@ -64,7 +64,7 @@ def safe_int(value, field_name="unknown"):
         return None
 
 
-def parse_priority(value) -> Optional[int]:
+def parse_priority(value) -> Optional[str]:
     """
     Parse priority field from various formats used by Indian SMBs.
     Handles: P0, P1, P2, P3, 0, 1, 2, 3, p0, Po, PO, etc.
@@ -73,7 +73,7 @@ def parse_priority(value) -> Optional[int]:
         value: Raw priority value from Gemini extraction
     
     Returns:
-        Integer 0-3 or None if invalid/empty
+        String in P-format (P0, P1, P2, P3) or None if invalid/empty
     """
     if value is None or value == "":
         return None
@@ -81,17 +81,19 @@ def parse_priority(value) -> Optional[int]:
     # Convert to string and clean
     value_str = str(value).strip().upper()
     
-    # Handle P0-P3 format (remove 'P' prefix)
+    # Handle P0-P3 format (already has 'P')
     if value_str.startswith('P'):
-        value_str = value_str[1:]  # Remove 'P'
+        value_str = value_str[1:]  # Remove 'P' to get the number
     
-    # Try to convert to int
+    # Try to convert to int and validate range
     try:
         priority_int = int(float(value_str))
         # Validate range 0-3
         if 0 <= priority_int <= 3:
-            logger.debug(f"parse_priority: '{value}' → {priority_int}")
-            return priority_int
+            # Return in P-format for frontend
+            result = f"P{priority_int}"
+            logger.debug(f"parse_priority: '{value}' → {result}")
+            return result
         else:
             logger.warning(f"parse_priority: '{value}' out of range (0-3), returning None")
             return None
@@ -315,12 +317,15 @@ async def upload_mapping_sheet(
                         mapping_upsert_data["customer_item_name"] = customer_item
                     if priority is not None: 
                         mapping_upsert_data["priority"] = priority
+                        logger.info(f"✅ Setting priority={priority} for {part_number}")
+                    else:
+                        logger.warning(f"⚠️ Priority is None for {part_number}, not setting")
                     if reorder is not None: 
                         mapping_upsert_data["reorder_point"] = reorder
                     
                     try:
                         if existing_mapping.data:
-                            logger.debug(f"Updating mapping for {part_number}: {mapping_upsert_data}")
+                            logger.info(f"🔄 Updating existing mapping for {part_number}: {mapping_upsert_data}")
                             db.client.table("vendor_mapping_entries")\
                                 .update(mapping_upsert_data)\
                                 .eq("id", existing_mapping.data[0]["id"])\
@@ -332,7 +337,7 @@ async def upload_mapping_sheet(
                             if not customer_item: 
                                 mapping_upsert_data["customer_item_name"] = ""
                             
-                            logger.debug(f"Inserting new mapping for {part_number}: {mapping_upsert_data}")
+                            logger.info(f"➕ Inserting new mapping for {part_number}: {mapping_upsert_data}")
                             db.client.table("vendor_mapping_entries")\
                                 .insert(mapping_upsert_data)\
                                 .execute()
