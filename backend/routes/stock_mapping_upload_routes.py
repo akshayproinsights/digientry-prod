@@ -21,8 +21,10 @@ from config import get_mappings_folder, get_google_api_key
 from google import genai
 from google.genai import types
 
-# Import recalculation function to trigger after upload
-from routes.stock_routes import recalculate_stock_for_user
+# Import recalculation wrapper for background execution
+from routes.stock_routes import recalculate_stock_wrapper
+from fastapi import BackgroundTasks
+import uuid
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,8 +35,20 @@ def calculate_file_hash(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+
+def safe_int(value):
+    """Safely convert value to int, handling floats and strings."""
+    if value is None:
+        return None
+    try:
+        # Convert to float first to handle "6.0", then to int
+        return int(float(value))
+    except (ValueError, TypeError):
+        return None
+
 @router.post("/upload", response_model=MappingSheetUploadResponse)
 async def upload_mapping_sheet(
+    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     current_user: dict = Depends(get_current_user)
 ):
@@ -133,8 +147,8 @@ async def upload_mapping_sheet(
                 vendor_description = row.get("vendor_description")
                 customer_item = row.get("customer_item")
                 priority = row.get("priority")
-                stock = row.get("stock")
-                reorder = row.get("reorder")
+                stock = safe_int(row.get("stock"))
+                reorder = safe_int(row.get("reorder"))
                 
                 if not part_number:
                     continue
@@ -290,12 +304,29 @@ async def upload_mapping_sheet(
             
             processed_count += 1
 
-        # Final Recalculation
-        logger.info(f"🔄 Triggering final stock recalculation...")
+        # Final Recalculation (Background Task)
+        logger.info(f"🔄 Queuing stock recalculation for {username}...")
         try:
-            recalculate_stock_for_user(username)
+            # Create a task_id for tracking
+            recalc_task_id = str(uuid.uuid4())
+            
+            # Initialize task in DB (required for wrapper updates)
+            db.insert("recalculation_tasks", {
+                "task_id": recalc_task_id,
+                "username": username,
+                "status": "queued",
+                "message": "Auto-triggered after mapping sheet upload",
+                "progress": {"total": 0, "processed": 0},
+                "created_at": datetime.utcnow().isoformat()
+            })
+            
+            # Run in background (uses stock_executor thread pool)
+            background_tasks.add_task(recalculate_stock_wrapper, recalc_task_id, username)
+            logger.info(f"✅ Stock recalculation queued (Task: {recalc_task_id})")
+            
         except Exception as e:
-            logger.error(f"Stock recalculation failed: {e}")
+            logger.error(f"Failed to queue stock recalculation: {e}")
+            # Don't fail the upload just because auto-recalc failed
 
         return MappingSheetUploadResponse(
             sheet_id="",

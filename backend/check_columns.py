@@ -18,12 +18,28 @@ def list_columns():
             for key in response.data[0].keys():
                 print(f"- {key}")
         else:
-            print("Table empty, cannot infer columns from data. Trying to select 'rate' specifically...")
-            try:
-                db.client.table("inventory_items").select("rate").limit(1).execute()
-                print("Column 'rate' EXISTS.")
-            except Exception as e:
-                print(f"Column 'rate' MISSING or Error: {e}")
+            print("Table empty, checking for missing columns...")
+            cols_to_check = [
+                "row_id", "username", "industry_type", "image_hash", 
+                "source_file", "receipt_link", "invoice_type", 
+                "invoice_date", "invoice_number", "vendor_name", 
+                "part_number", "batch", "description", "hsn", 
+                "qty", "rate", "disc_percent", "taxable_amount", 
+                "cgst_percent", "sgst_percent", 
+                "discounted_price", "taxed_amount", "net_bill", 
+                "amount_mismatch",
+                "model_used", "model_accuracy", "input_tokens", "output_tokens", "total_tokens", "cost_inr",
+                "accuracy_score", "row_accuracy"
+            ]
+            print(f"Checking {len(cols_to_check)} columns...")
+            for col in cols_to_check:
+                try:
+                    db.client.table("inventory_items").select(col).limit(1).execute()
+                    print(f"Column '{col}' EXISTS.")
+                except Exception as e:
+                    print(f"Column '{col}' MISSING.")
+                except Exception as e:
+                    print(f"Column '{col}' MISSING.")
 
     except Exception as e:
         print(f"Error: {e}")

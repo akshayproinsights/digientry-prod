@@ -20,7 +20,7 @@ def run_specific_migration(file_name: str):
     # Read migration file
     migration_path = Path(__file__).parent / "migrations" / file_name
     if not migration_path.exists():
-        print(f"❌ Migration file not found: {migration_path}")
+        print(f"Migration file not found: {migration_path}")
         return False
     
     with open(migration_path, 'r', encoding='utf-8') as f:
@@ -31,7 +31,7 @@ def run_specific_migration(file_name: str):
     
     try:
         # Try running as a single block first (best for DO $$ blocks)
-        print(f"▶️  Executing SQL block...", end=" ")
+        print(f"Executing SQL block...", end=" ")
         # Supabase Python client doesn't support exec_sql directly unless RPC is set up
         # BUT many setups use a helper function.
         # Let's try to query the REST API directly via a special RPC if enabled, 
@@ -39,10 +39,10 @@ def run_specific_migration(file_name: str):
         # Note: 'exec_sql' rpc must exist in DB. If not, this fails.
         
         result = supabase.rpc('exec_sql', {'sql': sql}).execute()
-        print("✅ Success")
+        print("Success")
         return True
     except Exception as e:
-        print(f"❌ RPC 'exec_sql' failed: {e}")
+        print(f"RPC 'exec_sql' failed: {e}")
         print("   (This is normal if the helper function isn't installed in DB)")
         print("\n   Trying alternative: Splitting statements...")
     
@@ -66,14 +66,14 @@ def run_specific_migration(file_name: str):
             # effectively without direct connection strings or enable pgTAP.
             # However, sometimes simpler queries work.
             result = supabase.rpc('exec_sql', {'sql': stmt}).execute()
-            print("✅")
+            print("Success")
             success_count += 1
         except Exception as e:
             if "already exists" in str(e).lower():
-                print("⏭️  Exists")
+                print("Exists")
                 success_count += 1
             else:
-                print(f"❌ {e}")
+                print(f"Error: {e}")
                 
     return success_count > 0
 
@@ -84,11 +84,11 @@ if __name__ == "__main__":
     else:
         # Default fallback
         target_migration = "fix_schema_mismatches_v2.sql"
-        print(f"⚠️  No file specified, defaulting to: {target_migration}")
+        print(f"No file specified, defaulting to: {target_migration}")
         print("   Usage: python run_specific_migration.py <filename.sql>")
     
     if run_specific_migration(target_migration):
-        print("\n✅ Migration applied.")
+        print("\nMigration applied.")
     else:
-        print("\n❌ Migration failed.")
+        print("\nMigration failed.")
         sys.exit(1)

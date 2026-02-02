@@ -62,12 +62,11 @@ class InventoryProcessStatusResponse(BaseModel):
 async def upload_inventory_files(
     files: List[UploadFile] = File(...),
     current_user: Dict[str, Any] = Depends(get_current_user),
-    r2_bucket: str = Depends(get_current_user_r2_bucket),
-    background_tasks: BackgroundTasks = None
+    r2_bucket: str = Depends(get_current_user_r2_bucket)
 ):
     """
-    Upload inventory files to R2 storage asynchronously.
-    Returns immediately with file_keys while uploads happen in background.
+    Upload inventory files to R2 storage SEQUENTIALLY and SYNCHRONOUSLY.
+    Blocks until all files are uploaded to prevent race conditions and memory crashes.
     """
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
@@ -80,7 +79,6 @@ async def upload_inventory_files(
         
         # Pre-generate file_keys and read file bytes immediately
         file_data_list = []
-        file_keys = []
         
         for file in files:
             # Read file bytes into memory
@@ -95,33 +93,80 @@ async def upload_inventory_files(
                 'filename': file.filename,
                 'file_key': file_key
             })
-            file_keys.append(file_key)
         
-        logger.info(f"Generated {len(file_keys)} inventory file keys for upload")
+        logger.info(f"Prepared {len(file_data_list)} files for sequential upload")
         
-        # Schedule background uploads
-        for file_data in file_data_list:
-            background_tasks.add_task(
-                upload_single_inventory_file_sync,
-                file_data['content'],
-                file_data['filename'],
-                username,
-                r2_bucket,
-                file_data['file_key']
-            )
+        # Execute sequential upload in thread pool (Blocking operation)
+        loop = asyncio.get_event_loop()
+        uploaded_keys = await loop.run_in_executor(
+            executor,
+            process_uploads_batch_sync,
+            file_data_list,
+            username,
+            r2_bucket
+        )
         
-        logger.info(f"Scheduled {len(file_data_list)} background inventory upload tasks")
+        if not uploaded_keys:
+             raise HTTPException(status_code=500, detail="Failed to upload any files")
+
+        logger.info(f"Successfully uploaded {len(uploaded_keys)} files sequentially")
         
-        # Return immediately with file_keys
         return {
             "success": True,
-            "uploaded_files": file_keys,
-            "message": f"Uploading {len(file_keys)} file(s) in background"
+            "uploaded_files": uploaded_keys,
+            "message": f"Successfully uploaded {len(uploaded_keys)} file(s)"
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in upload_inventory_files: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def process_uploads_batch_sync(
+    file_data_list: List[Dict[str, Any]],
+    username: str,
+    r2_bucket: str
+) -> List[str]:
+    """
+    Process a batch of inventory uploads sequentially and synchronously.
+    Running in thread pool to avoid blocking main loop, but blocking the request
+    until completion to ensure data integrity and prevent OOM.
+    """
+    uploaded_keys = []
+    logger.info(f"Starting sequential processing of {len(file_data_list)} files for {username}")
+    
+    for i, file_data in enumerate(file_data_list):
+        try:
+            logger.info(f"Uploading file {i+1}/{len(file_data_list)}: {file_data['filename']}")
+            
+            # Re-use existing sync upload logic
+            result_key = upload_single_inventory_file_sync(
+                content=file_data['content'],
+                filename=file_data['filename'],
+                username=username,
+                r2_bucket=r2_bucket,
+                file_key=file_data['file_key']
+            )
+            
+            if result_key:
+                uploaded_keys.append(result_key)
+                
+            # Force garbage collection after large image processing?
+            # Usually not needed in Python unless ref cycles, but helps with peak mem
+            import gc
+            del file_data['content'] 
+            gc.collect()
+            
+        except Exception as e:
+            logger.error(f"Failed to upload {file_data.get('filename')}: {e}")
+            # Continue with other files even if one fails
+            
+    logger.info(f"Completed sequential processing. Success: {len(uploaded_keys)}/{len(file_data_list)}")
+    return uploaded_keys
 
 
 def upload_single_inventory_file_sync(
@@ -297,6 +342,46 @@ async def get_inventory_process_status(
     except Exception as e:
         logger.error(f"Error fetching inventory task status {task_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch status: {str(e)}")
+
+
+@router.get("/recent-task", response_model=InventoryProcessStatusResponse)
+async def get_recent_inventory_task(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Get the most recent upload task for the current user.
+    Useful for resuming progress bars if the user refreshes the page.
+    """
+    try:
+        from database import get_database_client
+        db = get_database_client()
+        
+        # Fetch most recent task
+        response = db.client.table("upload_tasks")\
+            .select("*")\
+            .eq("username", current_user.get("username"))\
+            .order("created_at", desc=True)\
+            .limit(1)\
+            .execute()
+            
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=404, detail="No recent tasks found")
+            
+        status_record = response.data[0]
+        
+        return {
+            "task_id": status_record.get("task_id"),
+            "status": status_record.get("status", "unknown"),
+            "progress": status_record.get("progress", {}),
+            "message": status_record.get("message", ""),
+            "duplicates": status_record.get("duplicates", []),
+            "uploaded_r2_keys": status_record.get("uploaded_r2_keys", [])
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching recent inventory task: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch recent task: {str(e)}")
 
 
 def process_inventory_sync(
