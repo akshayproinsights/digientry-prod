@@ -520,9 +520,9 @@ def check_inventory_item_duplicate(
     Check if an inventory item is a duplicate without processing it.
     Downloads file, calculates hash, and checks DB.
     
-    Now checks BOTH:
-    1. Image hash (same photo)
-    2. Invoice number (different photo of same invoice)
+    Only checks image hash (same photo) to detect true duplicates.
+    This allows multi-page invoices with the same invoice number but 
+    different content to be processed correctly.
     """
     storage = get_storage_client()
     db = get_database_client()
@@ -536,7 +536,7 @@ def check_inventory_item_duplicate(
         # Calculate image hash
         img_hash = calculate_image_hash(image_bytes)
         
-        # LEVEL 1: Check for duplicate by image hash (exact same photo)
+        # Check for duplicate by image hash (exact same photo)
         duplicate_check = db.client.table("inventory_items")\
             .select("*")\
             .eq("image_hash", img_hash)\
@@ -567,54 +567,6 @@ def check_inventory_item_duplicate(
                 },
                 "message": f"This vendor invoice image was {date_msg}"
             }
-        
-        # LEVEL 2: Check for duplicate by invoice number (different photo of same invoice)
-        # First, we need to extract the invoice number from the image
-        # We'll do a quick AI extraction just to get the invoice number
-        
-        # Process the invoice to get just the invoice number
-        invoice_data = process_vendor_invoice(
-            image_bytes=image_bytes,
-            filename=file_key.split('/')[-1],
-            receipt_link="",  # We don't need this for duplicate check
-            username=username
-        )
-        
-        if invoice_data:
-            invoice_number = invoice_data.get("header", {}).get("invoice_number", "").strip()
-            
-            # Only check if we have a valid invoice number
-            if invoice_number:
-                invoice_check = db.client.table("inventory_items")\
-                    .select("*")\
-                    .eq("invoice_number", invoice_number)\
-                    .eq("username", username)\
-                    .limit(1)\
-                    .execute()
-                
-                if invoice_check.data and len(invoice_check.data) > 0:
-                    existing_record = invoice_check.data[0]
-                    logger.warning(f"Invoice duplicate detected for {file_key}: invoice_number={invoice_number}")
-                    
-                    upload_date = existing_record.get("upload_date")
-                    date_msg = f"already uploaded on {upload_date}" if upload_date else "already uploaded previously"
-                    
-                    return {
-                        "file_key": file_key,
-                        "image_hash": img_hash,
-                        "duplicate_type": "invoice",
-                        "invoice_number": invoice_number,
-                        "existing_record": {
-                            "id": existing_record.get("id"),
-                            "invoice_number": existing_record.get("invoice_number"),
-                            "invoice_date": existing_record.get("invoice_date"),
-                            "receipt_link": existing_record.get("receipt_link"),
-                            "upload_date": existing_record.get("upload_date"),
-                            "part_number": existing_record.get("part_number"),
-                            "description": existing_record.get("description")
-                        },
-                        "message": f"Invoice #{invoice_number} was {date_msg} (different photo detected)"
-                    }
             
     except Exception as e:
         logger.error(f"Error checking duplicate for {file_key}: {e}")

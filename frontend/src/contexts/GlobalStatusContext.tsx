@@ -34,10 +34,12 @@ export const GlobalStatusProvider: React.FC<{ children: ReactNode }> = ({ childr
     const [sales, setSales] = useState<SectionStatus>(initialSectionStatus);
 
     const setInventoryStatus = useCallback((status: Partial<SectionStatus>) => {
+        console.log('[🔵 INVENTORY STATUS UPDATE]', status);
         setInventory(prev => ({ ...prev, ...status }));
     }, []);
 
     const setSalesStatus = useCallback((status: Partial<SectionStatus>) => {
+        console.log('[🟢 SALES STATUS UPDATE]', status);
         setSales(prev => ({ ...prev, ...status }));
     }, []);
 

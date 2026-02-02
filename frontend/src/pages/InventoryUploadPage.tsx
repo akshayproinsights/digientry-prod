@@ -43,7 +43,10 @@ const InventoryUploadPage: React.FC = () => {
 
     // Resume monitoring on page load if there's an active task
     useEffect(() => {
+        console.log('🔍 [INVENTORY-PAGE] useEffect triggered - checking for active tasks...');
+
         // Clear completion badge if visiting this page
+        console.log('[🔵 INVENTORY] Clearing completion badge on mount');
         setInventoryStatus({ isComplete: false });
 
         let interval: any = null;
@@ -223,8 +226,16 @@ const InventoryUploadPage: React.FC = () => {
         // Cleanup on unmount
         return () => {
             if (interval) clearInterval(interval);
-            // Clear completion badge when leaving the page
-            setInventoryStatus({ isComplete: false });
+            // Clear ALL inventory status when leaving the page to prevent cross-contamination
+            console.log('[🔵 INVENTORY] Resetting all status on unmount');
+            setInventoryStatus({
+                isComplete: false,
+                isUploading: false,
+                processingCount: 0,
+                totalProcessing: 0,
+                reviewCount: 0,
+                syncCount: 0
+            });
         };
     }, []);
 

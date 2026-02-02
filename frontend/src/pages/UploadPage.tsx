@@ -48,6 +48,7 @@ const UploadPage: React.FC = () => {
         console.log('🔍 [UPLOAD-PAGE] useEffect triggered - checking for active tasks...');
 
         // Clear completion badge if visiting this page
+        console.log('[🟢 SALES] Clearing completion badge on mount');
         setSalesStatus({ isComplete: false });
 
         let interval: any = null;
@@ -237,8 +238,16 @@ const UploadPage: React.FC = () => {
                 clearInterval(intervalRef.current);
                 intervalRef.current = null;
             }
-            // Clear completion badge when leaving the page
-            setSalesStatus({ isComplete: false });
+            // Clear ALL sales status when leaving the page to prevent cross-contamination
+            console.log('[🟢 SALES] Resetting all status on unmount');
+            setSalesStatus({
+                isComplete: false,
+                isUploading: false,
+                processingCount: 0,
+                totalProcessing: 0,
+                reviewCount: 0,
+                syncCount: 0
+            });
         };
     }, []);
 
