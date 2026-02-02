@@ -3,7 +3,7 @@ Stock Mapping Sheet Upload Routes
 Handles PDF upload, Gemini extraction, and data storage for vendor mapping sheets.
 """
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 import hashlib
 import logging
