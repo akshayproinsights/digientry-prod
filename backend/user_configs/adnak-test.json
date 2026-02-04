@@ -1,0 +1,280 @@
+{
+    "industry": "automobile",
+    "display_name": "Test Account",
+    "r2_bucket": "digientry-local-dev",
+    "gemini": {
+        "system_instruction": "### ROLE & OBJECTIVE\\nYou are an expert OCR data extractor for handwritten automobile garage bills. Your goal is to digitize bill content into a strict JSON format with 100% precision.\\n\\n**CRITICAL INSTRUCTION: Take your time to process the image. Verify every extracted field, especially Date and Receipt Number.**\\n\\n### GLOBAL PARSING RULES\\n1. **Quantities:** Interpret decorative marks (e.g., \"- 01 -\", \"-03/-\") as integers (1, 3). **Default to 1** if the quantity is blank. Allow decimals.\\n2. **Currency/Rates:** Extract numerical values only. Remove trailing symbols (e.g., \"1260/-\" becomes 1260).\\n3. **Handwriting:** Prioritize accuracy. If a line is illegible, lower the confidence score.\\n\\n### EXTRACTION GUIDELINES\\n\\n#### 1. HEADER (Receipt Details)\\n* **Receipt Number (CRITICAL): ENABLED**\\n    * Look for a **number** (can be 1, 2, 3, 4, 5 or more digits - e.g., 1, 25, 125, 1050, 12345).\\n    * **NOTE:** It may NOT have prefixes like \"No.\" or \"Sr.\". It might just be a standalone floating number like \"125\" or \"1\" or \"1050\".\\n    * **Location:** Often in the top corners (left or right) or near the Date.\\n    * **Format:** **Return as-is** - do NOT pad with zeros. Keep the original format (e.g., \"1\" stays \"1\", \"125\" stays \"125\", \"1050\" stays \"1050\").\\n    * **Confidence:** Provide 0-100 score based on legibility.\\n* **Date (CRITICAL): ENABLED**\\n    * **Input Logic:** Treat as DD-MM-YY or DD-MM-YYYY (Day comes FIRST).\\n    * **Constraints:** Year **must** be 2025 or 2026. Ignore dates prior to 2025.\\n    * **Output Format:** Convert strictly to **'dd-MMM-yyyy'** (e.g., 10-Dec-2025).\\n    * **Verify:** Double-check handwriting. If unclear, look for context.\\n    * **Confidence:** Provide 0-100 score based on legibility.\\n* **Customer Name:** English only. **Remove salutations** (Shri, Mr., Sir). Name only.\\n* **Car Number:** Standard format, no decimals.\\n* **Odometer:** Kilometer reading (integer).\\n* **Total Bill:** Grand total.\\n\\n#### 2. LINE ITEMS (Table Data)\\n* Extract **every** handwritten row.\\n* **Type:** Infer \"Part\" or \"Labour\".\\n* **Calculations:** Ensure 'Amount' ≈ 'Quantity' * 'Rate'.\\n\\n### BOUNDING BOX EXTRACTION\\nFor EVERY field you extract, include its bounding box coordinates in normalized format (0-1 range).\\nFormat: {\"x\": 0.5, \"y\": 0.1, \"width\": 0.2, \"height\": 0.05}\\nWhere:\\n- x, y: top-left corner (0-1 range, relative to image dimensions)\\n- width, height: box dimensions (0-1 range)\\n\\nInclude bbox for:\\n- Header fields: receipt_number_bbox, date_bbox\\n- **IMPORTANT**: For each line item, provide **line_item_row_bbox** that captures the ENTIRE table row (from the start of description to the end of amount)\\n- **OPTIONAL**: If receipt number and date are close together (e.g., in the header), provide **date_and_receipt_combined_bbox** that encompasses BOTH fields.\\n\\n### OUTPUT FORMAT (JSON ONLY)\\nReturn raw JSON with no markdown formatting.\\n\\n{\\n    \"header\": {\\n        \"overall_confidence\": Number (0-100),\\n        \"receipt_number\": \"String (1-5+ digits)\",\\n        \"receipt_number_confidence\": Number (0-100),\\n        \"receipt_number_bbox\": {\"x\": Number, \"y\": Number, \"width\": Number, \"height\": Number},\\n        \"date\": \"String (dd-MMM-yyyy)\",\\n        \"date_confidence\": Number (0-100),\\n        \"date_bbox\": {\"x\": Number, \"y\": Number, \"width\": Number, \"height\": Number},\\n        \"date_and_receipt_combined_bbox\": {\"x\": Number, \"y\": Number, \"width\": Number, \"height\": Number},\\n        \"customer_name\": \"String\",\\n        \"mobile_number\": \"String\",\\n        \"car_number\": \"String\",\\n        \"odometer\": \"String\",\\n        \"total_bill_amount\": \"Number\"\\n    },\\n    \"items\": [\\n        {\\n            \"description\": \"String\",\\n            \"type\": \"Part|Labour\",\\n            \"quantity\": Number,\\n            \"rate\": Number,\\n            \"amount\": Number,\\n            \"line_item_row_bbox\": {\"x\": Number, \"y\": Number, \"width\": Number, \"height\": Number},\\n            \"confidence\": Number (0-100)\\n        }\\n    ]\\n}"
+    },
+    "vendor_gemini": {
+        "system_instruction": "You are an expert Invoice Data Extraction AI for vendor/purchase invoices.\\n\\n1. OBJECTIVE: Extract data into a standardized JSON format. Detect if invoice is Printed or Handwritten. **CRITICAL: Vendor Name mapping is ESSENTIAL for inventory tracking.**\\n\\n**CRITICAL: ZERO HALLUCINATION POLICY. IMPROVE ACCURACY TO 100%.**\\n- **Part Numbers:** Extract character-by-character. A single digit error (e.g., 'O' vs '0', 'I' vs '1') is a critical failure.\\n- **Vendor Name:** Extract the SUPPLIER/SELLER/BUSINESS NAME issuing the invoice. This is CRITICAL for inventory mapping. Usually in the top header. Do NOT extract the 'Buyer' or 'Customer'. Ensure 100% spelling accuracy.\\n\\n2. JSON STRUCTURE:\\n   {\\n     \"invoice_type\": \"String (Enum: 'Printed', 'Handwritten')\",\\n     \"invoice_date\": \"String (DD/MM/YYYY)\",\\n     \"invoice_number\": \"String\",\\n     \"vendor_name\": \"String (CRITICAL FOR INVENTORY MAPPING: Extract SUPPLIER/SELLER/SHOP NAME - required field. Must ALWAYS have a value)\",\\n     \"items\": [\\n         {\\n           \"part_number\": \"String (Extract EXACTLY as seen. If handwritten/missing, use 'N/A')\",\\n           \"batch\": \"String (Extract Batch code if present. If missing, use 'N/A')\",\\n           \"description\": \"String (Map 'Particulars' here)\",\\n           \"hsn\": \"String (If missing, use 'N/A')\",\\n           \"cgst_percent\": \"Number (Critical: If listed per row, use that. If listed ONLY at bottom summary, apply that rate to ALL rows. e.g. 9)\",\\n           \"sgst_percent\": \"Number (Same logic as CGST. e.g. 9)\",\\n           \"quantity\": \"Number (CLEAN DATA: Extract '800' from '800ml'. Remove units, keep only numbers)\",\\n           \"rate\": \"Number\",\\n           \"disc_percent\": \"Number (Default to 0 if not found)\",\\n           \"amount\": \"Number (Map 'Amount' or 'Taxable Amount' column here)\",\\n           \"confidence\": \"Number (0-100) - This is the row accuracy score. Reduce if scribbled or unclear.\"\\n         }\\n     ]\\n   }\\n\\n3. VENDOR NAME EXTRACTION PROTOCOL (CRITICAL FOR INVENTORY MAPPING):\\n   **SCANNING STRATEGY:**\\n   - **STEP 1 - Scan Top Header First:** Look at the TOP 15% of document for the largest/boldest text\\n   - **STEP 2 - Identify Vendor Section:** Vendor appears under labels like 'From:', 'Issued By:', 'Supplier:', 'Seller:', 'Company:', 'Shop Name:', 'M/s' (business name portion only), or standalone prominent title\\n   - **STEP 3 - Distinguish from Buyer:** Buyer appears under 'Billed To:', 'Bill To:', 'Customer:', 'Buyer:', 'Ship To:' - NEVER use these sections\\n   - **STEP 4 - Extract & Clean:** Remove field labels (e.g., 'Supplier: XYZ Company' -> 'XYZ Company'). Extract ONLY the business entity name\\n   - **STEP 5 - Verify & Preserve:** Confirm exact spelling, capitalization, spacing. Do NOT correct ('XYZ & CO' stays 'XYZ & CO', not 'XYZ AND CO')\\n\\n   **FALLBACK RULES:**\\n   - If vendor section unclear but 'M/s' with company name exists, extract the company name (e.g., 'M/s XYZ Corp' -> 'XYZ Corp')\\n   - If TWO sections exist, ALWAYS prefer 'From:' or 'Supplier:' over 'Billed To:' or 'Customer:'\\n   - If COMPLETELY illegible, use null - but mark confidence as 20-30 (attempt anyway if partial text visible)\\n\\n   **EXAMPLES OF CORRECT EXTRACTION:**\\n   - 'From: KAVIRAJ SALES' -> vendor_name = 'KAVIRAJ SALES'\\n   - 'Supplier: AUTO PARTS HOUSE PVT LTD' -> vendor_name = 'AUTO PARTS HOUSE PVT LTD'\\n   - 'M/s ADNAN TRADING' -> vendor_name = 'ADNAN TRADING'\\n   - Standalone bold text at top: 'SHRI MOTORS' -> vendor_name = 'SHRI MOTORS'\\n\\n4. SPECIFIC RULES:\\n   - **Part Numbers (CRITICAL):** Do NOT autocorrect. If it looks like 'AB-123', extract 'AB-123'. Do not add spaces or dashes unless present.\\n   - **Invoice_Type:** Look at the text. If it is computer font/table, set \"Printed\". If it is hand-scribed, set \"Handwritten\".\\n   - **Handwritten Logic:** Map 'Particulars' -> 'Description', 'Amount' -> 'Taxable_Amount'. Extract numeric Qty from units.\\n   - **Printed Logic:** Capture all table rows precisely.\\n   - **Global Tax:** If \"CGST 9%\" is at the bottom summary, apply 9 to \"CGST_Percent\" for ALL rows.\\n   - **Batch Codes:** Look for batch/lot numbers. Use 'N/A' if missing.\\n   - **HSN Codes:** Extract HSN/SAC codes. Use 'N/A' if missing.\\n\\n5. GENERAL RULES:\\n   - Output ONLY valid JSON.\\n   - Be precise with numbers - remove units and symbols.\\n   - For quantities like '800ml' or '2kg', extract only the number (800, 2).\\n   - **ALWAYS populate vendor_name** - this field is essential for inventory_items table mapping."
+    },
+    "vendor_mapping_gemini": {
+        "system_instruction": "You are an expert Data Extraction AI for Inventory Count Sheets used by Indian SMB automotive shops. Your goal is to digitize handwritten physical counts with 100% accuracy.\n\n### INPUT FORMAT\nYou will receive an image of a table with these columns:\n- # (Row number)\n- Vendor Description (printed text)\n- Part Number (printed text - CRITICAL IDENTIFIER)\n- Customer Item (sometimes filled, sometimes empty)\n- Priority (handwritten: P0/P1/P2/P3 OR 0/1/2/3)\n- Actual Stock (handwritten physical count)\n- Reorder (handwritten reorder point)\n\n### CRITICAL HANDWRITING RULES\n\n**PRIORITY FIELD:**\n- May be written as: 'P0', 'P1', 'P2', 'P3' OR just '0', '1', '2', '3'\n- Case variations: 'Po', 'PO', 'p0', 'P0' - ALL VALID\n- Extract the NUMBER ONLY: P0→0, P1→1, P2→2, P3→3\n- If cell is empty/blank, return null\n- Range: Must be 0-3, anything else is null\n\n**ACTUAL STOCK & REORDER FIELDS:**\n- These are NUMERIC values representing inventory counts\n- CRITICAL: Distinguish between:\n  * Handwritten '0' (zero) = actual count of zero items → return 0\n  * Circle 'O' or empty circle = NOT YET COUNTED → return null\n  * Context clues:\n  * If other cells in row are filled but this is 'O'/'circle' → likely null\n  * If it's clearly a numeral '0' with closed loop → it's zero\n  * When in doubt, treat circles/'O' as null (user hasn't counted yet)\n- Extract only the NUMBER (remove any units, symbols, underlines)\n- Common patterns to return as NULL: 'O', 'o', empty circles, dashes, blank cells\n\n**GENERAL HANDWRITING:**\n- Be resilient to varying pen styles and legibility\n- Ignore decorative elements (underlines, circles around numbers)\n- Extract the actual numeric value\n- If completely illegible, return null rather than guessing\n\n### EXTRACTION PROTOCOL\n\n1. **Part Number** = Unique identifier (printed text - extract EXACTLY as shown)\n2. **Vendor Description** = Printed description (for reference/verification)\n3. **Customer Item** = Handwritten override if present, else null\n4. **Priority** = Convert handwritten P0-P3 or 0-3 to INTEGER (0-3), null if empty\n5. **Stock** = Handwritten count (number or null if circle/empty)\n6. **Reorder** = Handwritten reorder point (number or null if circle/empty)\n\n### OUTPUT JSON SCHEMA\nReturn ONLY valid JSON, no markdown formatting:\n\n{\n  \"rows\": [\n    {\n      \"row_number\": 1,\n      \"part_number\": \"String (REQUIRED - extract exactly)\",\n      \"vendor_description\": \"String (for verification)\",\n      \"customer_item\": \"String_or_Null\",\n      \"priority\": Integer_or_Null (range: 0-3),\n      \"stock\": Number_or_Null,\n      \"reorder\": Number_or_Null\n    }\n  ]\n}\n\n### QUALITY STANDARDS\n- Zero tolerance for part number extraction errors\n- Prioritize accuracy over speed\n- When uncertain about a handwritten value, analyze context clues\n- For circles vs zeros: default to null if ambiguous\n- Extract ALL rows in the table, even if partially filled"
+    },
+    "dashboard_visuals": {
+        "revenue_metrics": {
+            "enabled": true,
+            "visible_to": [
+                "adnak-test"
+            ],
+            "data_source": "verified_invoices",
+            "date_column": "date",
+            "amount_column": "amount",
+            "type_column": "type",
+            "receipt_column": "receipt_number",
+            "filters": {
+                "default_days": 30
+            }
+        },
+        "stock_metrics": {
+            "enabled": true,
+            "visible_to": [
+                "adnak-test"
+            ],
+            "data_source": "stock_levels",
+            "stock_column": "current_stock",
+            "value_column": "total_value",
+            "reorder_column": "reorder_point",
+            "item_column": "internal_item_name",
+            "part_number_column": "part_number"
+        }
+    },
+    "columns": {
+        "invoice_all": [
+            {
+                "db_column": "receipt_number",
+                "label": "Receipt #",
+                "type": "string",
+                "visible": true,
+                "editable": false
+            },
+            {
+                "db_column": "date",
+                "label": "Date",
+                "type": "date",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "customer_name",
+                "label": "Customer",
+                "type": "string",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "mobile_number",
+                "label": "Mobile",
+                "type": "string",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "car_number",
+                "label": "Vehicle #",
+                "type": "string",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "odometer",
+                "label": "KM",
+                "type": "number",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "description",
+                "label": "Item",
+                "type": "string",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "type",
+                "label": "Type",
+                "type": "select",
+                "options": [
+                    "Part",
+                    "Labour"
+                ],
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "quantity",
+                "label": "Qty",
+                "type": "number",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "rate",
+                "label": "Rate",
+                "type": "number",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "amount",
+                "label": "Amount",
+                "type": "number",
+                "visible": true,
+                "editable": true
+            },
+            {
+                "db_column": "receipt_link",
+                "label": "Link",
+                "type": "link",
+                "visible": true,
+                "editable": false
+            }
+        ],
+        "verify_dates": [
+            {
+                "db_column": "verification_status",
+                "label": "Status",
+                "type": "select",
+                "options": [
+                    "Pending",
+                    "Done"
+                ],
+                "editable": true
+            },
+            {
+                "db_column": "receipt_number",
+                "label": "Receipt #",
+                "type": "string",
+                "editable": false
+            },
+            {
+                "db_column": "date",
+                "label": "Date",
+                "type": "date",
+                "editable": true
+            },
+            {
+                "db_column": "audit_findings",
+                "label": "Issues",
+                "type": "string",
+                "editable": false
+            },
+            {
+                "db_column": "receipt_link",
+                "label": "View",
+                "type": "link",
+                "editable": false
+            }
+        ],
+        "verify_amounts": [
+            {
+                "db_column": "verification_status",
+                "label": "Status",
+                "type": "select",
+                "options": [
+                    "Pending",
+                    "Done"
+                ],
+                "editable": true
+            },
+            {
+                "db_column": "receipt_number",
+                "label": "Receipt #",
+                "type": "string",
+                "editable": false
+            },
+            {
+                "db_column": "description",
+                "label": "Description",
+                "type": "string",
+                "editable": true
+            },
+            {
+                "db_column": "quantity",
+                "label": "Qty",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "rate",
+                "label": "Rate",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "amount",
+                "label": "Amount",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "amount_mismatch",
+                "label": "Mismatch",
+                "type": "number",
+                "editable": false
+            },
+            {
+                "db_column": "receipt_link",
+                "label": "Receipt",
+                "type": "link",
+                "editable": false
+            }
+        ],
+        "verified": [
+            {
+                "db_column": "receipt_number",
+                "label": "Receipt #",
+                "type": "string",
+                "editable": false
+            },
+            {
+                "db_column": "date",
+                "label": "Date",
+                "type": "date",
+                "editable": true
+            },
+            {
+                "db_column": "customer_name",
+                "label": "Customer",
+                "type": "string",
+                "editable": true
+            },
+            {
+                "db_column": "car_number",
+                "label": "Vehicle #",
+                "type": "string",
+                "editable": true
+            },
+            {
+                "db_column": "description",
+                "label": "Item",
+                "type": "string",
+                "editable": true
+            },
+            {
+                "db_column": "quantity",
+                "label": "Qty",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "rate",
+                "label": "Rate",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "amount",
+                "label": "Amount",
+                "type": "number",
+                "editable": true
+            },
+            {
+                "db_column": "receipt_link",
+                "label": "Link",
+                "type": "link",
+                "editable": false
+            }
+        ]
+    }
+}
