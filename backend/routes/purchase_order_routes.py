@@ -170,6 +170,7 @@ async def add_draft_item(
             "priority": item.priority or "P2",
             "supplier_name": item.supplier_name,
             "notes": save_notes,
+            "quantity": item.reorder_qty,  # Populate legacy column to satisfy NotNull constraint
             "added_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat()
         }
@@ -381,11 +382,13 @@ async def proceed_to_purchase_order(
         for item in draft_items:
             po_items_data.append({
                 "po_id": po_id,
+                "username": username,  # Required by schema
                 "part_number": item.get("part_number"),
                 "item_name": item.get("item_name"),
                 "current_stock": item.get("current_stock"),
                 "reorder_point": item.get("reorder_point"),
                 "ordered_qty": item.get("reorder_qty"),
+                "quantity": item.get("reorder_qty"),  # Legacy column required by schema
                 "unit_value": item.get("unit_value"),
                 "priority": item.get("priority"),
                 "supplier_part_number": item.get("part_number"),  # Can be different from internal part#
@@ -439,7 +442,7 @@ async def proceed_to_purchase_order(
             headers={
                 "Content-Disposition": f"attachment; filename={pdf_filename}",
                 "X-PO-Number": po_number,
-                "X-PO-ID": po_id,
+                "X-PO-ID": str(po_id),
                 "X-Total-Items": str(total_items),
                 "X-Total-Cost": str(total_estimated_cost)
             }

@@ -710,7 +710,8 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
         column_map = {
             'id': 'Row_Id',                     # invoices.id -> verified_invoices.row_id
             'receipt_number': 'Receipt Number',
-            'receipt_link': 'Receipt Link',
+            'r2_file_path': 'Receipt Link',     # invoices.r2_file_path -> Receipt Link (CRITICAL FIX)
+            'receipt_link': 'Receipt Link_Orig', # Keep original link if needed, but primary is r2_file_path
             'date': 'Date',
             'customer': 'Customer Name',        # invoices.customer -> Customer Name
             'vehicle_number': 'Car Number',     # invoices.vehicle_number -> Car Number
@@ -724,10 +725,17 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
             'verification_status': 'Verification Status',
         }
         
-        # Rename columns
+        # Rename columns for processing
+        # Note: We prioritize r2_file_path as 'Receipt Link' for correct processing
         df_raw = df_raw.rename(columns=column_map)
-        df_date = df_date.rename(columns=column_map)
-        df_amount = df_amount.rename(columns=column_map)
+        
+        # For verification tables, 'receipt_link' is the correct column
+        verification_map = column_map.copy()
+        verification_map['receipt_link'] = 'Receipt Link' # Override for verification tables
+        del verification_map['r2_file_path']
+        
+        df_date = df_date.rename(columns=verification_map)
+        df_amount = df_amount.rename(columns=verification_map)
         
         # Clean Receipt Number (.0 suffix)
         if "Receipt Number" in df_raw.columns:
@@ -736,6 +744,73 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
             df_date["Receipt Number"] = df_date["Receipt Number"].astype(str).str.replace(r'\.0$', '', regex=True)
         if "Receipt Number" in df_amount.columns:
             df_amount["Receipt Number"] = df_amount["Receipt Number"].astype(str).str.replace(r'\.0$', '', regex=True)
+
+        # REPAIR STEP 1: Build a map of Receipt Number -> Receipt Link from all available sources
+        # This fixes cases where invoices table has lost the link but verification tables still have it
+        receipt_link_map = {}
+        
+        # 1. Gather from Verify Dates (highest priority for link correctness)
+        if hasattr(df_date, 'columns') and 'Receipt Number' in df_date.columns and 'Receipt Link' in df_date.columns:
+            valid_dates = df_date.dropna(subset=['Receipt Number', 'Receipt Link'])
+            valid_dates = valid_dates[valid_dates['Receipt Link'].astype(str).str.strip() != '']
+            for _, row in valid_dates.iterrows():
+                r_num = str(row['Receipt Number']).strip()
+                r_link = str(row['Receipt Link']).strip()
+                if r_num and r_link:
+                    receipt_link_map[r_num] = r_link
+        
+        # 2. Gather from Verify Amounts
+        if hasattr(df_amount, 'columns') and 'Receipt Number' in df_amount.columns and 'Receipt Link' in df_amount.columns:
+            valid_amts = df_amount.dropna(subset=['Receipt Number', 'Receipt Link'])
+            valid_amts = valid_amts[valid_amts['Receipt Link'].astype(str).str.strip() != '']
+            for _, row in valid_amts.iterrows():
+                r_num = str(row['Receipt Number']).strip()
+                r_link = str(row['Receipt Link']).strip()
+                # Only add if not already present (prefer dates table source)
+                if r_num and r_link and r_num not in receipt_link_map:
+                    receipt_link_map[r_num] = r_link
+        
+        # 3. Gather from Invoices itself (if some siblings have it)
+        if hasattr(df_raw, 'columns') and 'Receipt Number' in df_raw.columns and 'Receipt Link' in df_raw.columns:
+            valid_raw = df_raw.dropna(subset=['Receipt Number', 'Receipt Link'])
+            valid_raw = valid_raw[valid_raw['Receipt Link'].astype(str).str.strip() != '']
+            for _, row in valid_raw.iterrows():
+                r_num = str(row['Receipt Number']).strip()
+                r_link = str(row['Receipt Link']).strip()
+                if r_num and r_link and r_num not in receipt_link_map:
+                    receipt_link_map[r_num] = r_link
+        
+        logger.info(f"✓ Built receipt link map for {len(receipt_link_map)} unique receipts")
+
+        # REPAIR STEP 2: Apply the map to missing links in df_raw
+        repaired_count = 0
+        if 'Receipt Number' in df_raw.columns and 'Receipt Link' in df_raw.columns:
+            for idx, row in df_raw.iterrows():
+                current_link = row.get('Receipt Link')
+                # Check if link is missing or empty
+                if pd.isna(current_link) or str(current_link).strip() == '':
+                    r_num = str(row.get('Receipt Number', '')).strip()
+                    # Try to find a link
+                    if r_num in receipt_link_map:
+                        new_link = receipt_link_map[r_num]
+                        df_raw.at[idx, 'Receipt Link'] = new_link
+                        # Also update Receipt Link_Orig if it exists
+                        if 'Receipt Link_Orig' in df_raw.columns:
+                            df_raw.at[idx, 'Receipt Link_Orig'] = new_link
+                        repaired_count += 1
+        
+        if repaired_count > 0:
+            logger.info(f"✨ Repaired {repaired_count} invoice records with missing file links")
+        # Some legacy/dev data has null r2_file_path but valid receipt_link (mapped to 'Receipt Link_Orig')
+        if 'Receipt Link' in df_raw.columns and 'Receipt Link_Orig' in df_raw.columns:
+            # Fill null Receipt Link with Receipt Link_Orig
+            df_raw['Receipt Link'] = df_raw['Receipt Link'].fillna(df_raw['Receipt Link_Orig'])
+            # Also handle empty strings if any
+            mask_empty = df_raw['Receipt Link'].astype(str).str.strip() == ''
+            if mask_empty.any():
+                df_raw.loc[mask_empty, 'Receipt Link'] = df_raw.loc[mask_empty, 'Receipt Link_Orig']
+            
+            logger.info("✓ Applied fallback for missing r2_file_path using receipt_link")
 
         corrections_made = False
         db = get_database_client()
@@ -862,9 +937,14 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
             if 'Date' in df_raw.columns:
                 df_raw['Date'] = safe_format_date_series(df_raw['Date'], output_format='%Y-%m-%d')
             
-            # Convert back to snake_case for Supabase
-            reverse_map = {v: k for k, v in column_map.items()}
-            df_raw_snake = df_raw.rename(columns=reverse_map)
+            # Convert back to snake_case for Supabase (INVOICES Table)
+            # CRITICAL: We need specific reverse map for invoices usage
+            invoice_reverse_map = {v: k for k, v in column_map.items()}
+            # Manually fix specific columns for invoices table
+            invoice_reverse_map['Receipt Link'] = 'r2_file_path'  # Restore to r2_file_path
+            # NOTE: Receipt Link_Orig should map back to receipt_link, so we keep it in the map
+            
+            df_raw_snake = df_raw.rename(columns=invoice_reverse_map)
             
             # Clean NaN/Inf values (not JSON compliant)
             df_raw_snake = df_raw_snake.replace([float('inf'), float('-inf')], None)
@@ -892,9 +972,9 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
         
         await emit_progress("saving_verified", 80, "Saving verified invoices...")
         
-        # Convert to snake_case  
-        reverse_map = {v: k for k, v in column_map.items()}
-        final_df_snake = final_df.rename(columns=reverse_map)
+        # Convert to snake_case for Verified Invoices
+        # Use same map as invoices - map Receipt Link back to r2_file_path
+        final_df_snake = final_df.rename(columns=invoice_reverse_map)
         
         # CRITICAL: 'Row_Id' was reverse-mapped to 'id', but we need it as 'row_id' for verified_invoices
         # Rename 'id' to 'row_id' to preserve the invoices.id integer value
@@ -918,7 +998,8 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
         # NOTE: 'id' has already been renamed to 'row_id' above, so no need to exclude it
         columns_to_exclude = [
             'updated_at',           # Only in invoices table
-            'Review Status'         # Only used internally, not in verified_invoices table
+            'Review Status',         # Only used internally, not in verified_invoices table
+            'Receipt Link_Orig'     # Intermediate column
         ]
         
         for col in columns_to_exclude:
@@ -972,6 +1053,11 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
         # Import helper function for updating verification tables
         from database_helpers import update_verification_records
         
+        # Create a reverse map specifically for verification tables (keeps receipt_link)
+        verification_reverse_map = {v: k for k, v in verification_map.items()}
+        # Ensure we map 'Receipt Link' -> 'receipt_link' for verification tables
+        verification_reverse_map['Receipt Link'] = 'receipt_link'
+        
         # Clean verification_dates
         if 'Verification Status' in df_date.columns:
             # Keep Pending and Duplicate Receipt Number records
@@ -997,7 +1083,7 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
                 return False
             
             df_date_clean = df_date[df_date.apply(should_keep_date_record, axis=1)].copy()
-            df_date_clean_snake = df_date_clean.rename(columns=reverse_map)
+            df_date_clean_snake = df_date_clean.rename(columns=verification_reverse_map)
             
             # Clean NaN/Inf values (not JSON compliant)
             df_date_clean_snake = df_date_clean_snake.replace([float('inf'), float('-inf')], None)
@@ -1026,7 +1112,7 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
                 return False
             
             df_amount_clean = df_amount[df_amount.apply(should_keep_amount_record, axis=1)].copy()
-            df_amount_clean_snake = df_amount_clean.rename(columns=reverse_map)
+            df_amount_clean_snake = df_amount_clean.rename(columns=verification_reverse_map)
             
             # Clean NaN/Inf values (not JSON compliant)
             df_amount_clean_snake = df_amount_clean_snake.replace([float('inf'), float('-inf')], None)

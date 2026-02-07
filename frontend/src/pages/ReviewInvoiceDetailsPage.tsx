@@ -821,8 +821,8 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                 <table className="w-full text-sm">
                                     <thead className="bg-gray-50 border-b border-gray-200">
                                         <tr>
-                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-[600px]">Image Preview</th>
-                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-56">Description</th>
+                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-[480px]">Image Preview</th>
+                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-[344px]">Description</th>
                                             <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">Qty</th>
                                             <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Rate</th>
                                             <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Amount</th>
@@ -877,7 +877,7 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                                 value={record['Description'] || ''}
                                                                 onChange={(e) => handleFieldChange(globalIdx, 'Description', e.target.value, false)}
                                                                 onBlur={() => handleFieldBlur(globalIdx, 'Description', false)}
-                                                                className={`border rounded px-3 py-2 w-full max-w-[220px] transition-all ${getFieldBorderClass(rowId, 'Description')
+                                                                className={`border rounded px-3 py-2 w-full max-w-[340px] transition-all ${getFieldBorderClass(rowId, 'Description')
                                                                     }`}
                                                             />
                                                         </td>

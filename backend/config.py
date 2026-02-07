@@ -74,33 +74,42 @@ def get_google_api_key() -> Optional[str]:
 def get_supabase_config() -> Optional[Dict[str, str]]:
     """
     Returns Supabase configuration.
-    Checks environment variables first, then falls back to secrets file.
+    Respects APP_ENV (development/production).
     """
-    # Check environment variables first
+    # 1. Check strict environment variables
     env_config = {
         "url": os.getenv("SUPABASE_URL"),
         "anon_key": os.getenv("SUPABASE_ANON_KEY"),
         "service_role_key": os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     }
     
-    # If all env vars present, return them
+    # If all env vars present, return them (highest priority)
     if all(env_config.values()):
         return env_config
         
     # BACKWARD COMPATIBILITY: Allow SUPABASE_KEY to map to service_role_key
-    # This matches what is defined in deploy.yml
     supabase_key = os.getenv("SUPABASE_KEY")
     if supabase_key and env_config["url"]:
         return {
             "url": env_config["url"],
-            "anon_key": supabase_key,       # Use same key for anon if missing
+            "anon_key": supabase_key,
             "service_role_key": supabase_key
         }
     
-    # Fallback to secrets file
+    # 2. Fallback to secrets file with APP_ENV support
     secrets = configs.load_secrets()
-    supabase = secrets.get("supabase", {})
+    env = os.getenv("APP_ENV", "development").lower()
     
+    # Try [supabase.env] -> [supabase]
+    # Examples: [supabase.production], [supabase.development]
+    supabase = secrets.get(f"supabase.{env}") or secrets.get("supabase", {})
+    
+    # If using nested dict structure
+    if not supabase and "supabase" in secrets:
+        base_supabase = secrets["supabase"]
+        if isinstance(base_supabase, dict):
+            supabase = base_supabase.get(env) or base_supabase
+
     if isinstance(supabase, dict) and supabase.get("url"):
         return {
             "url": supabase.get("url"),

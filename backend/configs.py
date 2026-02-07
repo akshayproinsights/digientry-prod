@@ -102,22 +102,20 @@ def get_r2_config() -> Dict[str, str]:
     """
     Returns the cloudflare_r2 configuration as a dict.
     Checks environment variables first, then falls back to secrets file.
-    Keys expected: account_id, endpoint_url, access_key_id, secret_access_key
+    Respects APP_ENV (development/production).
     """
-    # Check environment variables first
-    # Check environment variables first (support both CLOUDFLARE_R2_ and R2_ prefixes)
+    # 1. Check strict environment variables (R2_ACCOUNT_ID, etc.)
     account_id = os.getenv("CLOUDFLARE_R2_ACCOUNT_ID") or os.getenv("R2_ACCOUNT_ID")
     endpoint_url = os.getenv("CLOUDFLARE_R2_ENDPOINT_URL") or os.getenv("R2_ENDPOINT_URL")
     access_key_id = os.getenv("CLOUDFLARE_R2_ACCESS_KEY_ID") or os.getenv("R2_ACCESS_KEY_ID")
     secret_access_key = os.getenv("CLOUDFLARE_R2_SECRET_ACCESS_KEY") or os.getenv("R2_SECRET_ACCESS_KEY")
     public_base_url = os.getenv("CLOUDFLARE_R2_PUBLIC_BASE_URL") or os.getenv("R2_PUBLIC_BASE_URL")
 
-    # Construct endpoint URL if missing but account_id is present
-    if not endpoint_url and account_id:
-        endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
-    
-    # If all required credentials are present
-    if account_id and endpoint_url and access_key_id and secret_access_key:
+    # If all required credentials are present in env vars, USE THEM (highest priority)
+    if account_id and access_key_id and secret_access_key:
+        if not endpoint_url:
+            endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
+        
         return {
             "account_id": account_id,
             "endpoint_url": endpoint_url,
@@ -126,10 +124,27 @@ def get_r2_config() -> Dict[str, str]:
             "public_base_url": public_base_url
         }
     
-    # Fallback to secrets file
+    # 2. Fallback to secrets file with APP_ENV support
     secrets = load_secrets()
-    r2 = secrets.get("cloudflare_r2") or secrets.get("cloudflare_r2".lower()) or {}
-    # Normalize key names (support both variants)
+    env = os.getenv("APP_ENV", "development").lower()
+    
+    # Try [cloudflare_r2.env] -> [cloudflare_r2]
+    # Examples: [cloudflare_r2.production], [cloudflare_r2.development]
+    r2 = secrets.get(f"cloudflare_r2.{env}") or secrets.get("cloudflare_r2", {})
+    
+    # If using nested dict structure in TOML like:
+    # [cloudflare_r2]
+    #   [cloudflare_r2.production]
+    #      ...
+    if not r2 and "cloudflare_r2" in secrets:
+        base_r2 = secrets["cloudflare_r2"]
+        if isinstance(base_r2, dict):
+            r2 = base_r2.get(env) or base_r2  # Fallback to base if env specific not found
+
+    if not r2:
+        r2 = {}
+
+    # Normalize key names
     normalized = {
         "account_id": r2.get("account_id") or r2.get("accountId") or r2.get("account-id"),
         "endpoint_url": r2.get("endpoint_url") or r2.get("endpointUrl") or r2.get("endpoint"),

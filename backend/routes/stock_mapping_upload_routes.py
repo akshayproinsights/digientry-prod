@@ -293,6 +293,7 @@ async def upload_mapping_sheet(
                     .eq("part_number", part_number)\
                     .execute()
                 
+            
                 if existing_stock.data:
                     stock_item = existing_stock.data[0]
                     # Update Vendor Mapping Entry
@@ -380,7 +381,7 @@ async def upload_mapping_sheet(
                         logger.info(f"✏️ Updated stock for {part_number}: Target={stock}, Current={current_sys_stock}, Adj={adjustment_value}")
                         
                 else:
-                    # Restore deleted items if found in inventory
+                    # Check for restored items
                     inventory_check = db.client.table("inventory_items")\
                         .select("id")\
                         .eq("username", username)\
@@ -460,6 +461,79 @@ async def upload_mapping_sheet(
                                     .eq("username", username)\
                                     .eq("part_number", part_number)\
                                     .execute()
+                    else:
+                        # NEW ITEM CREATION
+                        # If not in stock_levels and not in inventory_items (deleted), treat as NEW
+                        
+                        logger.info(f"🆕 Creating NEW stock item: {part_number}")
+                        
+                        # 1. Create Vendor Mapping
+                        mapping_upsert_data = {
+                            "username": username,
+                            "part_number": part_number,
+                            "vendor_description": vendor_description or part_number,
+                            "status": "Added",  # Normal 'Added' status
+                            "created_at": datetime.now().isoformat(),
+                            "updated_at": datetime.now().isoformat()
+                        }
+                        
+                        if customer_item: 
+                            mapping_upsert_data["customer_item_name"] = customer_item
+                        else: 
+                            mapping_upsert_data["customer_item_name"] = ""
+                            
+                        if priority is not None: 
+                            mapping_upsert_data["priority"] = priority
+                        if reorder is not None: 
+                            mapping_upsert_data["reorder_point"] = reorder
+                            
+                        try:
+                            # Check if mapping already exists (edge case where stock_level missing but mapping exists)
+                            existing_mapping = db.client.table("vendor_mapping_entries")\
+                                .select("id")\
+                                .eq("username", username)\
+                                .eq("part_number", part_number)\
+                                .execute()
+                                
+                            if existing_mapping.data:
+                                db.client.table("vendor_mapping_entries")\
+                                    .update(mapping_upsert_data)\
+                                    .eq("id", existing_mapping.data[0]["id"])\
+                                    .execute()
+                            else:
+                                db.client.table("vendor_mapping_entries")\
+                                    .insert(mapping_upsert_data)\
+                                    .execute()
+                            total_mappings_created += 1
+                        except Exception as map_err:
+                            logger.error(f"Failed to create mapping for NEW item {part_number}: {map_err}")
+                            continue # Skip if mapping creation fails
+                            
+                        # 2. Create Stock Level
+                        # New item has 0 automated history, so current_stock = 0.
+                        # We set manual_adjustment = stock (from upload) so 'On Hand' = stock.
+                        initial_stock = int(stock) if stock is not None else 0
+                        
+                        stock_insert_data = {
+                            "username": username,
+                            "part_number": part_number,
+                            "internal_item_name": vendor_description or part_number,
+                            "current_stock": 0,
+                            "manual_adjustment": initial_stock,
+                            "old_stock": initial_stock, # Deprecated but kept for consistency
+                            "reorder_point": reorder if reorder is not None else 2, # Default
+                            "priority": priority, # Can be None
+                            "updated_at": datetime.now().isoformat(),
+                            "image_hash": file_hash
+                        }
+                        
+                        try:
+                            db.client.table("stock_levels").insert(stock_insert_data).execute()
+                            total_stock_updates += 1
+                            logger.info(f"✨ Created NEW stock_level for {part_number} with stock {initial_stock}")
+                        except Exception as stock_err:
+                            logger.error(f"Failed to create stock_level for NEW item {part_number}: {stock_err}")
+
             
             processed_count += 1
 

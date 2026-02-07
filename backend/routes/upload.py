@@ -400,8 +400,8 @@ async def get_process_status(
             "status": status_record.get("status", "unknown"),
             "progress": status_record.get("progress", {}),
             "message": status_record.get("message", ""),
-            "duplicates": status_record.get("duplicates", []),
-            "uploaded_r2_keys": status_record.get("uploaded_r2_keys", [])
+            "duplicates": status_record.get("duplicates") or [],
+            "uploaded_r2_keys": status_record.get("uploaded_r2_keys") or []
         }
     except HTTPException:
         raise
@@ -410,13 +410,14 @@ async def get_process_status(
         raise HTTPException(status_code=500, detail=f"Failed to fetch status: {str(e)}")
 
 
-@router.get("/recent-task", response_model=ProcessStatusResponse)
+@router.get("/recent-task", response_model=Optional[ProcessStatusResponse])
 async def get_recent_sales_task(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
     Get the most recent upload task for the current user.
     Useful for resuming progress bars if the user refreshes the page.
+    Returns None if no task found (instead of 404 to avoid console errors).
     """
     try:
         db = get_database_client()
@@ -431,7 +432,8 @@ async def get_recent_sales_task(
             .execute()
             
         if not response.data or len(response.data) == 0:
-            raise HTTPException(status_code=404, detail="No recent tasks found")
+            # Return None instead of 404 to indicate no task without triggering error
+            return None
             
         status_record = response.data[0]
         
@@ -440,13 +442,12 @@ async def get_recent_sales_task(
             "status": status_record.get("status", "unknown"),
             "progress": status_record.get("progress", {}),
             "message": status_record.get("message", ""),
-            "duplicates": status_record.get("duplicates", []),
-            "uploaded_r2_keys": status_record.get("uploaded_r2_keys", [])
+            "duplicates": status_record.get("duplicates") or [],
+            "uploaded_r2_keys": status_record.get("uploaded_r2_keys") or []
         }
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Error fetching recent sales task: {e}")
+        # Only raise 500 for actual errors
         raise HTTPException(status_code=500, detail=f"Failed to fetch recent task: {str(e)}")
 
 

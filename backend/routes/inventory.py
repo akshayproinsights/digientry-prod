@@ -491,7 +491,7 @@ def process_inventory_sync(
             if results["processed"] > 0:
                 logger.info(f"🔄 Auto-triggering stock recalculation for {username}...")
                 try:
-                    from routes.stock_routes import recalculate_stock_wrapper, create_recalculation_tasks_table_if_not_exists
+                    from routes.stock_routes import recalculate_stock_wrapper
                     
                     # Ensure table exists first (safeguard)
                     # create_recalculation_tasks_table_if_not_exists()
