@@ -41,6 +41,19 @@ export const authAPI = {
     },
 };
 
+export interface UploadHistoryResponse {
+    summary: {
+        last_active_date: string | null;
+        last_receipt_number: string | null;
+        status: string;
+    };
+    history: {
+        date: string;
+        count: number;
+        receipt_ids: string[];
+    }[];
+}
+
 // Upload & Processing
 export const uploadAPI = {
     uploadFiles: async (files: File[], onUploadProgress?: (progressEvent: any) => void) => {
@@ -75,8 +88,13 @@ export const uploadAPI = {
     },
 
     getFileUrl: async (fileKey: string) => {
-        const response = await apiClient.get(`/api/upload/files/view/${encodeURIComponent(fileKey)}`);
+        const response = await apiClient.get<any>(`/upload/file-url?file_key=${encodeURIComponent(fileKey)}`);
         return response.data.url;
+    },
+
+    getUploadHistory: async (): Promise<UploadHistoryResponse> => {
+        const response = await apiClient.get<UploadHistoryResponse>('/api/upload/upload-history');
+        return response.data;
     }
 };
 

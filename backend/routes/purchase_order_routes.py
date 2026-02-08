@@ -361,10 +361,11 @@ async def proceed_to_purchase_order(
             "supplier_name": request.supplier_name,
             "total_items": total_items,
             "total_estimated_cost": total_estimated_cost,
-            "status": "draft",
+            "status": "placed",  # Mark as 'placed' since we're generating PDF
             "notes": request.notes,
             "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
+            "updated_at": datetime.now().isoformat(),
+            "completion_percentage": 0  # Initially 0% received
         }
         
         po_response = db.client.table("purchase_orders")\
@@ -853,13 +854,260 @@ async def get_suppliers(
     except Exception as e:
         logger.error(f"Error getting suppliers: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-        result = await add_draft_item(draft_item, current_user)
-        logger.info(f"✅ CHECKPOINT B5: Quick-add completed successfully")
-        return result
+
+# ============================================================================
+# PO STATUS & INVOICE MATCHING ENDPOINTS
+# ============================================================================
+
+@router.patch("/{po_id}/status")
+async def update_po_status(
+    po_id: str,
+    status: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Update PO status for workflow tracking (placed → partial → received → cancelled).
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    valid_statuses = ["placed", "partial", "received", "cancelled"]
+    if status not in valid_statuses:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+        )
+    
+    try:
+        response = db.client.table("purchase_orders")\
+            .update({
+                "status": status,
+                "updated_at": datetime.now().isoformat()
+            })\
+            .eq("id", po_id)\
+            .eq("username", username)\
+            .execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+        
+        logger.info(f"Updated PO {po_id} status to {status}")
+        
+        return {
+            "success": True,
+            "po": response.data[0],
+            "message": f"PO status updated to {status}"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating PO status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ReceiveItemsRequest(BaseModel):
+    """Request to mark items as received from vendor invoice"""
+    vendor_invoice_number: str
+    items_received: List[Dict[str, Any]]  # [{"part_number": "...", "received_qty": 5}]
+    delivery_date: Optional[str] = None
+
+
+@router.post("/{po_id}/receive-items")
+async def receive_items_from_invoice(
+    po_id: str,
+    request: ReceiveItemsRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Update PO with received items from vendor invoice.
+    Used when vendor delivers items and provides invoice.
+    Tracks received quantities and calculates completion percentage.
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        logger.info(f"📦 Processing received items for PO {po_id}, invoice: {request.vendor_invoice_number}")
+        
+        # 1. Verify PO exists and belongs to user
+        po_response = db.client.table("purchase_orders")\
+            .select("*")\
+            .eq("id", po_id)\
+            .eq("username", username)\
+            .execute()
+        
+        if not po_response.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+        
+        po = po_response.data[0]
+        
+        # 2. Update each line item with received quantity
+        updated_items = []
+        for item in request.items_received:
+            part_number = item.get("part_number")
+            received_qty = item.get("received_qty", 0)
+            
+            # Get the PO line item
+            po_item_response = db.client.table("purchase_order_items")\
+                .select("*")\
+                .eq("po_id", po_id)\
+                .eq("part_number", part_number)\
+                .execute()
+            
+            if po_item_response.data:
+                po_item = po_item_response.data[0]
+                current_received = po_item.get("received_qty", 0) or 0
+                ordered_qty = po_item.get("ordered_qty", 0) or po_item.get("quantity", 0)
+                new_received = current_received + received_qty
+                
+                # Determine delivery status
+                if new_received >= ordered_qty:
+                    delivery_status = "complete"
+                elif new_received > 0:
+                    delivery_status = "partial"
+                else:
+                    delivery_status = "pending"
+                
+                # Update item
+                updated = db.client.table("purchase_order_items")\
+                    .update({
+                        "received_qty": new_received,
+                        "vendor_invoice_number": request.vendor_invoice_number,
+                        "received_date": request.delivery_date or date.today().isoformat(),
+                        "delivery_status": delivery_status
+                    })\
+                    .eq("id", po_item["id"])\
+                    .execute()
+                
+                updated_items.append({
+                    "part_number": part_number,
+                    "ordered": ordered_qty,
+                    "received": new_received,
+                    "status": delivery_status
+                })
+        
+        # 3. Calculate overall PO completion percentage
+        all_items = db.client.table("purchase_order_items")\
+            .select("ordered_qty, quantity, received_qty")\
+            .eq("po_id", po_id)\
+            .execute()
+        
+        total_ordered = sum(
+            item.get("ordered_qty", 0) or item.get("quantity", 0) 
+            for item in all_items.data
+        )
+        total_received = sum(item.get("received_qty", 0) or 0 for item in all_items.data)
+        completion = (total_received / total_ordered * 100) if total_ordered > 0 else 0
+        
+        # 4. Update PO with invoice reference and completion
+        vendor_invoices = po.get("vendor_invoice_numbers", []) or []
+        if request.vendor_invoice_number not in vendor_invoices:
+            vendor_invoices.append(request.vendor_invoice_number)
+        
+        # Update PO status based on completion
+        new_status = po.get("status")
+        if completion >= 100:
+            new_status = "received"
+        elif completion > 0:
+            new_status = "partial"
+        
+        db.client.table("purchase_orders")\
+            .update({
+                "vendor_invoice_numbers": vendor_invoices,
+                "completion_percentage": round(completion, 2),
+                "status": new_status,
+                "delivery_date": request.delivery_date or date.today().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            })\
+            .eq("id", po_id)\
+            .execute()
+        
+        logger.info(f"✅ PO {po_id} updated: {completion:.1f}% complete, status: {new_status}")
+        
+        return {
+            "success": True,
+            "message": f"Received items updated for invoice {request.vendor_invoice_number}",
+            "completion_percentage": round(completion, 2),
+            "status": new_status,
+            "items_updated": updated_items
+        }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ CHECKPOINT B6: Error quick-adding to draft: {e}")
+        logger.error(f"❌ Error receiving items: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/match-invoice")
+async def suggest_po_for_invoice(
+    supplier_name: str,
+    invoice_date: Optional[str] = Query(None, description="Invoice date for filtering"),
+    part_numbers: Optional[str] = Query(None, description="Comma-separated part numbers"),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Suggest POs that might match an incoming vendor invoice.
+    Matches based on supplier name, dates, and part numbers.
+    Returns ranked list with match scores and outstanding items.
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        logger.info(f"🔍 Searching for POs matching supplier: {supplier_name}")
+        
+        # Find POs from this supplier with open status
+        query = db.client.table("purchase_orders")\
+            .select("*")\
+            .eq("username", username)\
+            .ilike("supplier_name", f"%{supplier_name}%")\
+            .in_("status", ["placed", "partial"])\
+            .order("created_at", desc=True)\
+            .limit(10)
+        
+        pos = query.execute().data or []
+        
+        logger.info(f"📋 Found {len(pos)} potential matching POs")
+        
+        # If part numbers provided, rank by matching items
+        if part_numbers and pos:
+            parts = [p.strip() for p in part_numbers.split(",")]
+            logger.info(f"🔎 Matching against parts: {parts}")
+            
+            # Get line items for each PO
+            for po in pos:
+                items_response = db.client.table("purchase_order_items")\
+                    .select("part_number, ordered_qty, quantity, received_qty, delivery_status")\
+                    .eq("po_id", po["id"])\
+                    .execute()
+                
+                po["items"] = items_response.data or []
+                
+                # Calculate match score
+                matching_parts = sum(1 for item in po["items"] if item["part_number"] in parts)
+                po["match_score"] = matching_parts
+                
+                # Count outstanding items
+                po["outstanding_items"] = sum(
+                    1 for item in po["items"] 
+                    if (item.get("received_qty", 0) or 0) < (item.get("ordered_qty", 0) or item.get("quantity", 0))
+                )
+                
+                # Get total items
+                po["total_items"] = len(po["items"])
+            
+            # Sort by match score (highest first)
+            pos.sort(key=lambda x: x.get("match_score", 0), reverse=True)
+        
+        return {
+            "success": True,
+            "suggested_pos": pos,
+            "count": len(pos),
+            "supplier_searched": supplier_name
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error matching invoice: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -7,6 +7,8 @@ import DuplicateWarningModal from '../components/DuplicateWarningModal';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import { useGlobalStatus } from '../contexts/GlobalStatusContext';
 import imageCompression from 'browser-image-compression';
+import ResumeBanner from '../components/ResumeBanner';
+import RecentUploadsTable from '../components/RecentUploadsTable';
 
 const UploadPage: React.FC = () => {
     const navigate = useNavigate();
@@ -43,13 +45,32 @@ const UploadPage: React.FC = () => {
     const [previewModalOpen, setPreviewModalOpen] = useState(false);
     const [previewIndex, setPreviewIndex] = useState(0);
 
+    // History & Status State
+    const [uploadHistory, setUploadHistory] = useState<any>(null);
+
+    const fetchHistory = useCallback(async () => {
+        try {
+            const historyData = await salesAPI.getUploadHistory();
+            setUploadHistory(historyData);
+        } catch (error) {
+            console.error('Failed to fetch upload history:', error);
+        }
+    }, []);
+
+    // Initial load
+    useEffect(() => {
+        fetchHistory();
+    }, [fetchHistory]);
+
     // Resume monitoring on page load if there's an active task
     useEffect(() => {
         console.log('🔍 [UPLOAD-PAGE] useEffect triggered - checking for active tasks...');
 
-        // Clear completion badge if visiting this page
-        console.log('[🟢 SALES] Clearing completion badge on mount');
+        // CHANGE 1: Clear completion state on page mount
+        console.log('[🟢 SALES] Clearing completion badge and state on mount');
         setSalesStatus({ isComplete: false });
+        setProcessingStatus(null); // Clear any previous completion status
+        localStorage.removeItem('salesCompletionStatus'); // Prevent showing old completions
 
         let interval: any = null;
 
@@ -67,17 +88,12 @@ const UploadPage: React.FC = () => {
                 return true;
             }
 
-            // Priority 2: Check backend for any recent ongoing or just-completed tasks
+            // Priority 2: Check backend for any recent ongoing tasks (NOT completed ones)
             try {
                 const recentTask = await salesAPI.getRecentTask();
                 if (recentTask && recentTask.task_id) {
-                    // Check if we have already seen/acknowledged this specific task
-                    const lastSeenId = localStorage.getItem('lastSeenSalesTaskId');
-
-                    // If the task is DIFFERENT from the last one we saw completed
-                    // OR if it is currently processing (always show processing)
-                    const isNewTask = recentTask.task_id !== lastSeenId;
-
+                    // CHANGE 2: Only resume processing/queued/duplicate_detected tasks
+                    // Do NOT show completed tasks on mount (they were already shown once)
                     if (recentTask.status === 'processing' || recentTask.status === 'queued' || recentTask.status === 'duplicate_detected') {
                         console.log('🔄 [UPLOAD-PAGE] Resuming recent task from backend:', recentTask.task_id);
                         setIsProcessing(true);
@@ -106,19 +122,17 @@ const UploadPage: React.FC = () => {
                                 setShowDuplicateModal(true);
                                 setFilesToSkip([]);
                                 setFilesToForceUpload([]);
-                                setUploadedFiles(recentTask.uploaded_r2_keys || []);
-                                (window as any).__temp_r2_keys = recentTask.uploaded_r2_keys || [];
+
+                                // Recover uploaded files list from backend status if possible
+                                if (recentTask.uploaded_r2_keys) {
+                                    setUploadedFiles(recentTask.uploaded_r2_keys);
+                                    (window as any).__temp_r2_keys = recentTask.uploaded_r2_keys;
+                                    console.log('🔄 [RESUME] Recovered uploaded files list:', recentTask.uploaded_r2_keys.length);
+                                }
                             }
                         }
-                        return true;
-                    }
-
-                    // If task is completed and we HAVEN'T seen it yet (regardless of time)
-                    const isCompleted = recentTask.status === 'completed' || recentTask.status === 'failed';
-                    if (isCompleted && isNewTask) {
-                        console.log('✅ [UPLOAD-PAGE] Found unseen completed task, showing success:', recentTask.task_id);
-                        finishProcessing(recentTask);
-                        return true;
+                    } else {
+                        console.log('⏸️ [UPLOAD-PAGE] Found completed/failed task but NOT showing (already viewed):', recentTask.task_id);
                     }
                 }
             } catch (e) {
@@ -238,6 +252,13 @@ const UploadPage: React.FC = () => {
                 clearInterval(intervalRef.current);
                 intervalRef.current = null;
             }
+
+            // CHANGE 3: Mark current task as viewed when leaving the page
+            if (processingStatus?.task_id && processingStatus?.status === 'completed') {
+                console.log('[🟢 SALES] Marking completed task as viewed:', processingStatus.task_id);
+                localStorage.setItem('lastSeenSalesTaskId', processingStatus.task_id);
+            }
+
             // Clear ALL sales status when leaving the page to prevent cross-contamination
             console.log('[🟢 SALES] Resetting all status on unmount');
             setSalesStatus({
@@ -248,6 +269,9 @@ const UploadPage: React.FC = () => {
                 reviewCount: 0,
                 syncCount: 0
             });
+
+            // Clear completion status from localStorage
+            localStorage.removeItem('salesCompletionStatus');
         };
     }, []);
 
@@ -841,10 +865,19 @@ const UploadPage: React.FC = () => {
 
         queryClient.invalidateQueries({ queryKey: ['invoices'] });
         queryClient.invalidateQueries({ queryKey: ['review'] });
+        fetchHistory(); // Refresh history table
     };
 
     return (
         <div className="max-w-4xl mx-auto space-y-4">
+            {/* Resume Banner - Always Visible */}
+            <ResumeBanner
+                lastDate={uploadHistory?.summary?.last_active_date || null}
+                lastReceiptNumber={uploadHistory?.summary?.last_receipt_number || null}
+                count={uploadHistory?.history?.find((h: any) => h.date === uploadHistory.summary?.last_active_date)?.count || 1}
+                status={uploadHistory?.summary?.status || 'no_uploads'}
+            />
+
             {/* Warning Banner During Upload */}
             {isUploading && (
                 <div className="fixed top-0 left-0 right-0 bg-yellow-500 text-white px-6 py-4 shadow-lg z-50">
@@ -888,35 +921,38 @@ const UploadPage: React.FC = () => {
             )}
 
             {/* Upload Area */}
-            <div
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={`border-2 border-dashed rounded-xl p-10 text-center transition ${isDragging
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-gray-300 bg-white hover:border-gray-400'
-                    }`}
-            >
-                <UploadIcon className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-                <p className="text-lg font-medium text-gray-700 mb-2">
-                    Drop invoice images here
-                </p>
-                <p className="text-sm text-gray-500 mb-3">
-                    or click to browse (JPG, PNG supported)
-                </p>
-                <label className="inline-block">
-                    <input
-                        type="file"
-                        multiple
-                        accept="image/*"
-                        onChange={handleFileInput}
-                        className="hidden"
-                    />
-                    <span className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition cursor-pointer inline-block">
-                        Select Files
-                    </span>
-                </label>
-            </div>
+            {/* HIDE UPLOAD AREA IF PROCESSING OR COMPLETED (Two column layout takes over) */}
+            {!isProcessing && !processingStatus && files.length === 0 && (
+                <div
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    className={`border-2 border-dashed rounded-xl p-10 text-center transition ${isDragging
+                        ? 'border-blue-500 bg-blue-50'
+                        : 'border-gray-300 bg-white hover:border-gray-400'
+                        }`}
+                >
+                    <UploadIcon className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+                    <p className="text-lg font-medium text-gray-700 mb-2">
+                        Drop invoice images here
+                    </p>
+                    <p className="text-sm text-gray-500 mb-3">
+                        or click to browse (JPG, PNG supported)
+                    </p>
+                    <label className="inline-block">
+                        <input
+                            type="file"
+                            multiple
+                            accept="image/*"
+                            onChange={handleFileInput}
+                            className="hidden"
+                        />
+                        <span className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition cursor-pointer inline-block">
+                            Select Files
+                        </span>
+                    </label>
+                </div>
+            )}
 
             {/* Two-Column Layout: Image Preview (Left) + Processing Status (Right) */}
             {(files.length > 0 || isProcessing || processingStatus) && (
@@ -1161,7 +1197,7 @@ const UploadPage: React.FC = () => {
                                             const stats = (processingStatus as any).duplicateStats || {};
                                             const processed = processingStatus.progress?.processed || 0;
 
-                                            // If we have explicit stats, use them. 
+                                            // If we have explicit stats, use them.
                                             // Otherwise fallback: if processed > 0, assume all are new (unless we know better)
                                             // But really we only know for sure if duplicateStats exists.
                                             const hasStats = stats.newFiles !== undefined;
@@ -1228,8 +1264,7 @@ const UploadPage: React.FC = () => {
                                             }}
                                             className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 px-4 rounded-lg transition flex items-center justify-center gap-2 shadow-sm"
                                         >
-                                            <CheckCircle size={18} />
-                                            Review & Sync →
+                                            Next: Review & Sync <Loader2 className="opacity-0 w-0" /> {/* Spacer */}
                                         </button>
                                         <button
                                             onClick={() => {
@@ -1244,16 +1279,6 @@ const UploadPage: React.FC = () => {
                                     </div>
                                 )}
                             </>
-                        ) : isProcessing ? (
-                            <div className="h-full flex items-center justify-center text-gray-300 border-2 border-dashed border-gray-200 rounded-lg p-6">
-                                <div className="text-center">
-                                    <Loader2 className="mx-auto mb-3 w-8 h-8 text-blue-500 animate-spin" />
-                                    <p className="text-xs font-medium text-gray-700 mb-1">Loading status...</p>
-                                    <p className="text-xs text-gray-500">
-                                        Fetching processing details
-                                    </p>
-                                </div>
-                            </div>
                         ) : (
                             <div className="h-full flex items-center justify-center text-gray-300 border-2 border-dashed border-gray-200 rounded-lg p-6">
                                 <div className="text-center">
@@ -1293,8 +1318,12 @@ const UploadPage: React.FC = () => {
                 onDelete={handleDeleteFromPreview}
                 onNavigate={handleNavigatePreview}
             />
+
+            {/* Recent Uploads History Table - Always Visible */}
+            <RecentUploadsTable history={uploadHistory?.history || []} />
         </div>
     );
 };
 
 export default UploadPage;
+

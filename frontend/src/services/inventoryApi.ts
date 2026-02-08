@@ -50,6 +50,14 @@ export const inventoryAPI = {
     },
 
     /**
+     * Get inventory upload history
+     */
+    getUploadHistory: async () => {
+        const response = await apiClient.get('/api/inventory/upload-history');
+        return response.data;
+    },
+
+    /**
      * Get inventory items with optional filtering
      */
     getInventoryItems: async (showAll: boolean = false) => {

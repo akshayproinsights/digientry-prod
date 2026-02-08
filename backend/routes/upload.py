@@ -56,16 +56,124 @@ class ProcessStatusResponse(BaseModel):
     duplicates: List[Dict[str, Any]] = []  # Add duplicates field
     uploaded_r2_keys: List[str] = []  # CRITICAL: R2 keys for frontend
 
+class UploadHistoryItem(BaseModel):
+    date: str
+    count: int
+    receipt_ids: List[str]
 
-@router.get("/test")
-async def test_endpoint():
-    """Test endpoint to verify backend is receiving requests"""
-    import sys
-    # Try multiple output methods
-    print("\n" + "="*80, flush=True)
-    print("🎯 TEST ENDPOINT HIT!", flush=True)
-    print("="*80 + "\n", flush=True)
-    sys.stdout.flush()
+class UploadHistorySummary(BaseModel):
+    last_active_date: Optional[str] = None
+    last_receipt_number: Optional[str] = None
+    status: str = "caught_up"
+
+class UploadHistoryResponse(BaseModel):
+    summary: UploadHistorySummary
+    history: List[UploadHistoryItem]
+
+@router.get("/upload-history", response_model=UploadHistoryResponse)
+def get_upload_history(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Get upload history and status for the "Resume" banner.
+    Returns:
+    - Last active date and receipt number
+    - Recent history grouped by date (last 10 entries)
+    """
+    try:
+        username = current_user['username']
+        db = get_database_client()
+        supabase = db.client
+        
+        # 1. Fetch recent invoices for history (limit 100 to process in memory)
+        # ORDER BY date (receipt date) DESC to get most recent receipts by invoice date
+        # This is what SMB users care about - "what's my latest receipt?" not "when did I upload?"
+        response = supabase.table('invoices') \
+            .select('date, receipt_number, created_at') \
+            .eq('username', username) \
+            .order('date', desc=True) \
+            .limit(100) \
+            .execute()
+            
+        invoices = response.data if response.data else []
+        
+        if not invoices:
+            return {
+                "summary": {
+                    "last_active_date": None,
+                    "last_receipt_number": None,
+                    "status": "no_uploads"
+                },
+                "history": []
+            }
+            
+        # 2. Process for Summary (Latest Upload)
+        # CRITICAL: Use receipt date (date field) - this is what SMB users care about
+        # "What's my latest receipt by date?" not "when did I upload?"
+        # ALSO: Within the same date, pick the receipt with the HIGHEST receipt number
+        latest_receipt_date = invoices[0].get('date', '')  # Latest date
+        
+        # Find all receipts for this date and pick the one with max receipt_number
+        receipts_on_latest_date = [inv for inv in invoices if inv.get('date') == latest_receipt_date]
+        latest_invoice = max(receipts_on_latest_date, key=lambda x: int(x.get('receipt_number', 0) or 0))
+        
+        
+        # 3. Process for History (Group by Date)
+        # Group by the 'date' field (invoice date)
+        history_map = {}
+        
+        for inv in invoices:
+            date_str = inv.get('date') or 'Unknown Date'
+            receipt_num = inv.get('receipt_number') or 'N/A'
+            
+            if date_str not in history_map:
+                history_map[date_str] = {
+                    "date": date_str,
+                    "count": 0,
+                    "receipt_ids": [],
+                    "seen_receipts": set()  # Track unique receipts
+                }
+            
+            # Only increment count once per unique receipt number
+            if receipt_num not in history_map[date_str]["seen_receipts"]:
+                history_map[date_str]["count"] += 1
+                history_map[date_str]["seen_receipts"].add(receipt_num)
+                
+                # Only show first 10 unique receipts per day in the chip list
+                if len(history_map[date_str]["receipt_ids"]) < 10:
+                    history_map[date_str]["receipt_ids"].append(f"#{receipt_num}")
+                
+        # Convert map to list and sort by date descending
+        history_list = sorted(
+            history_map.values(), 
+            key=lambda x: x['date'], 
+            reverse=True
+        )
+        
+        # formatting history items (remove seen_receipts set before returning)
+        final_history = []
+        for item in history_list:
+             # Remove the tracking set before creating the response model
+             item.pop('seen_receipts', None)
+             final_history.append(UploadHistoryItem(**item))
+             
+        return {
+            "summary": {
+                "last_active_date": latest_receipt_date,  # Use receipt date - what SMB users care about
+                "last_receipt_number": latest_invoice.get('receipt_number'),
+                "status": "caught_up"
+            },
+            "history": final_history[:7] # Return last 7 active revenue dates
+        }
+        
+    except Exception as e:
+        print(f"Error fetching upload history: {e}")
+        # Return empty structure on error to avoid breaking UI
+        return {
+            "summary": {"status": "error"},
+            "history": []
+        }
+
     sys.stderr.write("\n🔥 STDERR TEST ENDPOINT HIT!\n")
     sys.stderr.flush()
     logger.info("🎯 TEST ENDPOINT HIT VIA LOGGER")

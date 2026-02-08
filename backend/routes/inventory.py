@@ -58,6 +58,137 @@ class InventoryProcessStatusResponse(BaseModel):
     uploaded_r2_keys: List[str] = []  # CRITICAL: R2 keys for frontend
 
 
+class InventoryUploadHistoryItem(BaseModel):
+    date: str
+    count: int
+    invoice_ids: List[str]
+
+class InventoryUploadHistorySummary(BaseModel):
+    last_active_date: Optional[str] = None
+    last_invoice_number: Optional[str] = None
+    status: str = "caught_up"
+
+class InventoryUploadHistoryResponse(BaseModel):
+    summary: InventoryUploadHistorySummary
+    history: List[InventoryUploadHistoryItem]
+
+
+@router.get("/upload-history", response_model=InventoryUploadHistoryResponse)
+def get_inventory_upload_history(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Get inventory upload history and status for the "Resume" banner.
+    Returns:
+    - Last active date and invoice number
+    - Recent history grouped by date (last 7 entries)
+    """
+    try:
+        username = current_user['username']
+        from database import get_database_client
+        db = get_database_client()
+        supabase = db.client
+        
+        # 1. Fetch recent inventory items for history (limit 100 to process in memory)
+        # ORDER BY invoice_date DESC to get most recent invoices by date
+        response = supabase.table('inventory_items') \
+            .select('invoice_date, invoice_number, created_at') \
+            .eq('username', username) \
+            .order('invoice_date', desc=True) \
+            .limit(100) \
+            .execute()
+            
+        items = response.data if response.data else []
+        
+        if not items:
+            return {
+                "summary": {
+                    "last_active_date": None,
+                    "last_invoice_number": None,
+                    "status": "no_uploads"
+                },
+                "history": []
+            }
+            
+        # 2. Process for Summary (Latest Upload)
+        # Use invoice_date (date field) - this is what users care about
+        # ALSO: Within the same date, pick the invoice with the HIGHEST invoice number
+        latest_invoice_date = items[0].get('invoice_date', '')  # Latest date
+        
+        # Find all invoices for this date and pick the one with max invoice_number
+        invoices_on_latest_date = [item for item in items if item.get('invoice_date') == latest_invoice_date]
+        
+        # Try to convert invoice_number to int for comparison, fallback to string comparison
+        def get_invoice_num(item):
+            num = item.get('invoice_number', '') or ''
+            # Try to extract numeric part for comparison
+            try:
+                # If it's purely numeric, use int
+                return int(num)
+            except (ValueError, TypeError):
+                # If it contains letters, just use string comparison
+                return num
+        
+        latest_item = max(invoices_on_latest_date, key=get_invoice_num)
+        
+        
+        # 3. Process for History (Group by Date)
+        # Group by the 'invoice_date' field
+        history_map = {}
+        
+        for item in items:
+            date_str = item.get('invoice_date') or 'Unknown Date'
+            invoice_num = item.get('invoice_number') or 'N/A'
+            
+            if date_str not in history_map:
+                history_map[date_str] = {
+                    "date": date_str,
+                    "count": 0,
+                    "invoice_ids": [],
+                    "seen_invoices": set()  # Track unique invoices
+                }
+            
+            # Only increment count once per unique invoice number
+            if invoice_num not in history_map[date_str]["seen_invoices"]:
+                history_map[date_str]["count"] += 1
+                history_map[date_str]["seen_invoices"].add(invoice_num)
+                
+                # Only show first 10 unique invoices per day in the chip list
+                if len(history_map[date_str]["invoice_ids"]) < 10:
+                    history_map[date_str]["invoice_ids"].append(f"#{invoice_num}")
+                
+        # Convert map to list and sort by date descending
+        history_list = sorted(
+            history_map.values(), 
+            key=lambda x: x['date'], 
+            reverse=True
+        )
+        
+        # Format history items (remove seen_invoices set before returning)
+        final_history = []
+        for item in history_list:
+             # Remove the tracking set before creating the response model
+             item.pop('seen_invoices', None)
+             final_history.append(InventoryUploadHistoryItem(**item))
+             
+        return {
+            "summary": {
+                "last_active_date": latest_invoice_date,  # Use invoice date
+                "last_invoice_number": latest_item.get('invoice_number'),
+                "status": "caught_up"
+            },
+            "history": final_history[:7] # Return last 7 active dates
+        }
+        
+    except Exception as e:
+        print(f"Error fetching inventory upload history: {e}")
+        # Return empty structure on error to avoid breaking UI
+        return {
+            "summary": {"status": "error"},
+            "history": []
+        }
+
+
 @router.post("/upload", response_model=InventoryUploadResponse)
 async def upload_inventory_files(
     files: List[UploadFile] = File(...),

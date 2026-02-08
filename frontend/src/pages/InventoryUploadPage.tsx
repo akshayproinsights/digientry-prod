@@ -7,6 +7,8 @@ import DuplicateWarningModal from '../components/DuplicateWarningModal';
 import ImagePreviewModal from '../components/ImagePreviewModal';
 import { useGlobalStatus } from '../contexts/GlobalStatusContext';
 import imageCompression from 'browser-image-compression';
+import InventoryResumeBanner from '../components/InventoryResumeBanner';
+import InventoryRecentUploadsTable from '../components/InventoryRecentUploadsTable';
 
 const InventoryUploadPage: React.FC = () => {
     const navigate = useNavigate();
@@ -37,6 +39,9 @@ const InventoryUploadPage: React.FC = () => {
     const queryClient = useQueryClient();
     const { setInventoryStatus } = useGlobalStatus(); // NEW: Global Context
 
+    // Upload history state
+    const [uploadHistory, setUploadHistory] = useState<any>(null);
+
     // Image preview modal state
     const [previewModalOpen, setPreviewModalOpen] = useState(false);
     const [previewIndex, setPreviewIndex] = useState(0);
@@ -45,9 +50,11 @@ const InventoryUploadPage: React.FC = () => {
     useEffect(() => {
         console.log('🔍 [INVENTORY-PAGE] useEffect triggered - checking for active tasks...');
 
-        // Clear completion badge if visiting this page
-        console.log('[🔵 INVENTORY] Clearing completion badge on mount');
+        // CHANGE 1: Clear completion state on page mount
+        console.log('[🔵 INVENTORY] Clearing completion badge and state on mount');
         setInventoryStatus({ isComplete: false });
+        setProcessingStatus(null); // Clear any previous completion status
+        localStorage.removeItem('inventoryCompletionStatus'); // Prevent showing old completions
 
         let interval: any = null;
 
@@ -63,17 +70,12 @@ const InventoryUploadPage: React.FC = () => {
                 return true;
             }
 
-            // Priority 2: Check backend for any recent ongoing or just-completed tasks
+            // Priority 2: Check backend for any recent ongoing tasks (NOT completed ones)
             try {
                 const recentTask = await inventoryAPI.getRecentTask();
                 if (recentTask && recentTask.task_id) {
-                    // Check if we have already seen/acknowledged this specific task
-                    const lastSeenId = localStorage.getItem('lastSeenInventoryTaskId');
-
-                    // If the task is DIFFERENT from the last one we saw completed
-                    // OR if it is currently processing (always show processing)
-                    const isNewTask = recentTask.task_id !== lastSeenId;
-
+                    // CHANGE 2: Only resume processing/queued/duplicate_detected tasks
+                    // Do NOT show completed tasks on mount (they were already shown once)
                     if (recentTask.status === 'processing' || recentTask.status === 'queued' || recentTask.status === 'duplicate_detected') {
                         console.log('Resuming recent task from backend:', recentTask.task_id);
                         setIsProcessing(true);
@@ -106,14 +108,8 @@ const InventoryUploadPage: React.FC = () => {
                             }
                         }
                         return true;
-                    }
-
-                    // If task is completed and we HAVEN'T seen it yet (regardless of time)
-                    const isCompleted = recentTask.status === 'completed' || recentTask.status === 'failed';
-                    if (isCompleted && isNewTask) {
-                        console.log('Found unseen completed task, showing success:', recentTask.task_id);
-                        finishProcessing(recentTask);
-                        return true;
+                    } else {
+                        console.log('⏸️ [INVENTORY-PAGE] Found completed/failed task but NOT showing (already viewed):', recentTask.task_id);
                     }
                 }
             } catch (e) {
@@ -226,6 +222,13 @@ const InventoryUploadPage: React.FC = () => {
         // Cleanup on unmount
         return () => {
             if (interval) clearInterval(interval);
+
+            // CHANGE 3: Mark current task as viewed when leaving the page
+            if (processingStatus?.task_id && processingStatus?.status === 'completed') {
+                console.log('[🔵 INVENTORY] Marking completed task as viewed:', processingStatus.task_id);
+                localStorage.setItem('lastSeenInventoryTaskId', processingStatus.task_id);
+            }
+
             // Clear ALL inventory status when leaving the page to prevent cross-contamination
             console.log('[🔵 INVENTORY] Resetting all status on unmount');
             setInventoryStatus({
@@ -236,8 +239,24 @@ const InventoryUploadPage: React.FC = () => {
                 reviewCount: 0,
                 syncCount: 0
             });
+
+            // Clear completion status from localStorage
+            localStorage.removeItem('inventoryCompletionStatus');
         };
     }, []);
+
+    // Fetch upload history on mount and when processing completes
+    useEffect(() => {
+        const fetchHistory = async () => {
+            try {
+                const history = await inventoryAPI.getUploadHistory();
+                setUploadHistory(history);
+            } catch (error) {
+                console.error('Failed to fetch upload history:', error);
+            }
+        };
+        fetchHistory();
+    }, [processingStatus?.status]); // Refetch when processing status changes
 
     // Browser warning when trying to close/refresh during upload or processing
     useEffect(() => {
@@ -826,6 +845,16 @@ const InventoryUploadPage: React.FC = () => {
                 </div>
             )}
 
+            {/* Resume Banner - Show Upload History */}
+            {uploadHistory && (
+                <InventoryResumeBanner
+                    lastDate={uploadHistory.summary?.last_active_date}
+                    lastInvoiceNumber={uploadHistory.summary?.last_invoice_number}
+                    count={uploadHistory.history?.find((h: any) => h.date === uploadHistory.summary?.last_active_date)?.count || 1}
+                    status={uploadHistory.summary?.status}
+                />
+            )}
+
             {/* Upload Area */}
             {/* Simulator Removed */}
             <div
@@ -1134,6 +1163,13 @@ const InventoryUploadPage: React.FC = () => {
                 onDelete={handleDeleteFromPreview}
                 onNavigate={handleNavigatePreview}
             />
+
+            {/* Recent Uploads Table */}
+            {uploadHistory && uploadHistory.history && uploadHistory.history.length > 0 && (
+                <div className="mt-6">
+                    <InventoryRecentUploadsTable history={uploadHistory.history} />
+                </div>
+            )}
         </div>
     );
 };
